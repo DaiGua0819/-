@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#f7f2eb" />
     <title>XVI · 线下活动素材库</title>
     <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/ux.css" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -20,12 +21,18 @@
         <input id="search-input" type="search" placeholder="搜索品牌、关键词或作者" autocomplete="off" />
         <kbd>⌘ K</kbd>
       </label>
+      <button id="mobile-filter-button" class="mobile-filter-button" type="button" aria-controls="filter-sidebar" aria-expanded="false">
+        <span aria-hidden="true">☷</span><span>筛选</span><b id="mobile-filter-count" hidden>0</b>
+      </button>
       <div class="topbar-meta"><span class="live-dot"></span> 本地素材库</div>
     </header>
 
     <main class="layout">
-      <aside class="sidebar" aria-label="筛选条件">
-        <div class="side-heading"><span>浏览素材</span><button id="reset-filters" class="text-button">重置</button></div>
+      <aside id="filter-sidebar" class="sidebar" aria-label="筛选条件">
+        <div class="side-heading">
+          <span>浏览素材</span>
+          <div class="side-actions"><button id="reset-filters" class="text-button" type="button">重置</button><button id="close-filters" class="icon-button-inline" type="button" aria-label="关闭筛选">×</button></div>
+        </div>
         <section class="filter-section">
           <p class="filter-label">推送状态</p>
           <label class="switch-row"><input id="only-new" type="checkbox" /><span class="switch"></span><span>仅看未推送</span></label>
@@ -41,10 +48,14 @@
         </section>
         <section class="filter-section tags-section">
           <p class="filter-label">检索标签</p>
+          <label class="tag-search" for="tag-search-input"><span aria-hidden="true">⌕</span><input id="tag-search-input" type="search" placeholder="查找标签" autocomplete="off" /></label>
           <div id="tag-filters" class="tag-list" aria-live="polite"></div>
+          <button id="toggle-tags" class="text-button tag-toggle" type="button" hidden>显示更多标签</button>
         </section>
         <p class="sidebar-footnote">素材仅来自已入库的采集结果；页面不会主动访问小红书。</p>
+        <button id="apply-mobile-filters" class="primary-button mobile-apply-button" type="button">查看筛选结果</button>
       </aside>
+      <button id="filter-backdrop" class="filter-backdrop" type="button" aria-label="关闭筛选" hidden></button>
 
       <section class="content">
         <section class="hero">
@@ -61,15 +72,16 @@
           <article class="summary-card skeleton"></article><article class="summary-card skeleton"></article>
         </section>
 
+        <div id="active-filters" class="active-filters" aria-live="polite"></div>
         <div class="result-toolbar">
-          <p id="result-count">正在读取素材…</p>
-          <p class="threshold-note">整篇笔记全部图片完成判定且 ≥60% 符合，才进入“满足推送阈值”。</p>
+          <div><p id="result-count">正在读取素材…</p><p class="threshold-note">全部图片完成判定且 ≥60% 符合，才满足推送阈值。</p></div>
+          <label class="sort-control" for="sort-select"><span>排序</span><select id="sort-select"><option value="recent">最近采集</option><option value="oldest">最早采集</option><option value="most_images">图片最多</option><option value="review_priority">优先待复核</option></select></label>
         </div>
         <section id="masonry" class="masonry" aria-live="polite"></section>
         <div id="empty-state" class="empty-state" hidden>
           <span>◇</span><h2>没有匹配的笔记</h2><p>试试清除筛选或改用更短的关键词。</p>
         </div>
-        <div class="load-more-wrap"><button id="load-more" class="outline-button" hidden>加载更多</button></div>
+        <div class="load-more-wrap"><button id="load-more" class="outline-button" hidden>加载更多</button><span id="load-sentinel" aria-hidden="true"></span></div>
       </section>
     </main>
 
@@ -78,8 +90,16 @@
         <button id="close-dialog" class="icon-button" aria-label="关闭详情">×</button>
         <div id="dialog-content" class="dialog-content"></div>
       </div>
+    <div id="image-viewer" class="image-viewer" hidden role="dialog" aria-modal="true" aria-label="查看大图">
+      <button id="close-image-viewer" class="viewer-close" type="button" aria-label="关闭大图">×</button>
+      <button id="previous-image" class="viewer-nav previous" type="button" aria-label="上一张图片">‹</button>
+      <img id="viewer-image" alt="素材大图" />
+      <p id="viewer-caption"></p>
+      <button id="next-image" class="viewer-nav next" type="button" aria-label="下一张图片">›</button>
+    </div>
+    <button id="back-to-top" class="back-to-top" type="button" aria-label="回到顶部" hidden>↑</button>
     </dialog>
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/static/app.js"></script>
+    <div id="toast" class="toast" role="status" aria-live="polite"><span id="toast-message"></span><button id="toast-action" type="button" hidden></button></div>
+    <script type="module" src="/static/library.js"></script>
   </body>
 </html>

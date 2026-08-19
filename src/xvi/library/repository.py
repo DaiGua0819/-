@@ -335,10 +335,12 @@ class LibraryRepository:
         only_new: bool,
         limit: int,
         offset: int,
+        sort: str = "recent",
     ) -> dict[str, Any]:
         where, params = self._note_filters(query=query, tag=tag, status=status, only_new=only_new)
         scored_sql = self._scored_notes_sql()
         where_sql = " AND ".join(where)
+        order_by = self._note_sort(sort)
         with self.connection() as connection:
             count = connection.execute(
                 f"SELECT COUNT(*) AS total FROM ({scored_sql}) AS scored WHERE {where_sql}",
@@ -348,7 +350,7 @@ class LibraryRepository:
                 f"""
                 SELECT * FROM ({scored_sql}) AS scored
                 WHERE {where_sql}
-                ORDER BY last_captured_at DESC, note_key DESC
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
                 """,
                 [self.qualification_threshold, *params, limit, offset],
@@ -457,6 +459,20 @@ class LibraryRepository:
             LEFT JOIN assets a ON a.note_key=n.note_key
             GROUP BY n.note_key
         """
+
+    @staticmethod
+    def _note_sort(sort: str) -> str:
+        order_by = {
+            "recent": "last_captured_at DESC, note_key DESC",
+            "oldest": "last_captured_at ASC, note_key ASC",
+            "most_images": "asset_count DESC, last_captured_at DESC, note_key DESC",
+            "review_priority": (
+                "CASE WHEN eligibility='needs_review' THEN 0 "
+                "WHEN eligibility='below_threshold' THEN 1 ELSE 2 END, "
+                "(asset_count - reviewed_count) DESC, last_captured_at DESC, note_key DESC"
+            ),
+        }
+        return order_by.get(sort, order_by["recent"])
 
     @staticmethod
     def _note_filters(

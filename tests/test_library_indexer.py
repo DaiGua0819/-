@@ -101,3 +101,65 @@ def test_indexer_persists_source_url_and_legacy_review(tmp_path: Path) -> None:
         ]
         == 0
     )
+
+
+def test_list_notes_supports_safe_sort_modes(tmp_path: Path) -> None:
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    repository.ensure_schema()
+
+    def add_note(note_key: str, captured_at: str, asset_count: int) -> None:
+        repository.upsert_note(
+            {
+                "note_key": note_key,
+                "source_note_id": note_key,
+                "source_url": f"https://www.xiaohongshu.com/explore/{note_key}",
+                "normalized_url": f"https://www.xiaohongshu.com/explore/{note_key}",
+                "title": note_key,
+                "search_keyword": "快闪 活动",
+                "author_id": None,
+                "author_name": None,
+                "published_at": None,
+                "expected_image_count": asset_count,
+                "capture_complete": 1,
+                "captured_at": captured_at,
+            }
+        )
+        for source_index in range(asset_count):
+            asset_id = f"{note_key}-{source_index}"
+            repository.upsert_asset(
+                {
+                    "asset_id": asset_id,
+                    "note_key": note_key,
+                    "source_index": source_index,
+                    "local_path": str(tmp_path / f"{asset_id}.jpg"),
+                    "width": 700,
+                    "height": 900,
+                    "mime_type": "image/jpeg",
+                    "sha256": asset_id,
+                    "phash": asset_id,
+                    "capture_method": "rendered_screenshot",
+                    "ai_requirement_status": None,
+                    "ai_requirement_reason": None,
+                }
+            )
+
+    add_note("newer-note", "2026-08-19T08:00:00+00:00", 1)
+    add_note("older-note", "2026-08-18T08:00:00+00:00", 3)
+
+    def sorted_note_keys(sort: str) -> list[str]:
+        result = repository.list_notes(
+            query=None,
+            tag=None,
+            status=None,
+            only_new=False,
+            limit=10,
+            offset=0,
+            sort=sort,
+        )
+        return [str(item["note_key"]) for item in result["items"]]
+
+    assert sorted_note_keys("recent") == ["newer-note", "older-note"]
+    assert sorted_note_keys("oldest") == ["older-note", "newer-note"]
+    assert sorted_note_keys("most_images") == ["older-note", "newer-note"]
+    assert sorted_note_keys("review_priority") == ["older-note", "newer-note"]
+    assert sorted_note_keys("unexpected") == ["newer-note", "older-note"]

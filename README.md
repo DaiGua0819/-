@@ -83,3 +83,5 @@ docker compose down
 - `docs/development/implementation-plan.md`：实施计划
 - `docs/runbooks/operations.md`：运行手册
 - `docs/decisions/adr-002-visible-download-or-rendered-capture.md`：原图下载与渲染截图策略
+
+页面支持 `Ctrl/⌘ + K` 聚焦搜索；详情中可用左右方向键切换笔记，大图模式下可切换图片。筛选条件会保留在当前 URL 中。

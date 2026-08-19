@@ -80,6 +80,7 @@ def create_app(
         only_new: bool = False,
         limit: int | None = Query(default=None, ge=1),
         offset: int = Query(default=0, ge=0),
+        sort: Literal["recent", "oldest", "most_images", "review_priority"] = "recent",
     ) -> dict[str, object]:
         page_size = min(
             limit or settings.library_default_page_size,
@@ -92,6 +93,7 @@ def create_app(
             only_new=only_new,
             limit=page_size,
             offset=offset,
+            sort=sort,
         )
 
     @app.get("/api/v1/library/notes/{note_key}")
