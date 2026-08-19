@@ -29,6 +29,8 @@ let notesRequestId = 0;
 let searchTimer;
 let toastTimer;
 let toastCallback;
+const reasonSaveTimers = new Map();
+const reasonSaveOperations = new Set();
 
 const labels = {
   eligible: "满足推送阈值",
@@ -296,7 +298,7 @@ function renderNoteDetail(note, scrollTop = 0) {
         <span class="image-number">#${asset.source_index + 1}</span>
         ${reviewEvidence(asset)}
         <div class="review-choices" role="group" aria-label="图片 ${asset.source_index + 1} 复核结果">${reviewButtons(asset)}</div>
-        <div class="review-note"><label for="${escapeHtml(reasonId)}">人工备注</label><div><input id="${escapeHtml(reasonId)}" data-review-reason data-asset-id="${escapeHtml(asset.asset_id)}" value="${escapeHtml(humanReason)}" maxlength="500" placeholder="补充符合或不符合的原因" /><button type="button" data-save-reason data-asset-id="${escapeHtml(asset.asset_id)}">保存</button></div></div>
+        <div class="review-note"><label for="${escapeHtml(reasonId)}">人工备注 <span data-reason-status>${humanReason ? "已保存" : ""}</span></label><div><input id="${escapeHtml(reasonId)}" data-review-reason data-asset-id="${escapeHtml(asset.asset_id)}" data-saved-reason="${escapeHtml(humanReason)}" value="${escapeHtml(humanReason)}" maxlength="500" placeholder="补充符合或不符合的原因" /><button type="button" data-save-reason data-asset-id="${escapeHtml(asset.asset_id)}">保存</button></div></div>
       </footer>
     </article>`;
   }).join("");
@@ -323,6 +325,9 @@ function renderNoteDetail(note, scrollTop = 0) {
 }
 
 async function openNote(noteKey, { preserveScroll = false } = {}) {
+  if (dialog.open && state.currentNoteKey && state.currentNoteKey !== noteKey) {
+    await flushPendingReasonSaves();
+  }
   const scrollTop = preserveScroll ? $("#dialog-content").scrollTop : 0;
   try {
     const note = await api(`/api/v1/library/notes/${noteKey}`);
@@ -336,7 +341,8 @@ async function openNote(noteKey, { preserveScroll = false } = {}) {
   }
 }
 
-function closeNote() {
+async function closeNote() {
+  await flushPendingReasonSaves();
   if (dialog.open) dialog.close();
 }
 
@@ -353,16 +359,59 @@ async function saveReview(assetId, status, reason = null) {
   });
 }
 
+function normalizeReason(value) {
+  return value.trim() || null;
+}
+
+function reviewReasonInput(assetId) {
+  return $$("[data-review-reason]").find((input) => input.dataset.assetId === assetId);
+}
+
+function draftReason(asset) {
+  const input = reviewReasonInput(asset.asset_id);
+  return input ? normalizeReason(input.value) : asset.human_review_reason || null;
+}
+
+function clearReasonTimer(assetId) {
+  clearTimeout(reasonSaveTimers.get(assetId));
+  reasonSaveTimers.delete(assetId);
+}
+
+function setReasonStatus(input, status, message) {
+  const container = input.closest(".review-note");
+  container?.classList.remove("dirty", "saving", "saved", "error");
+  if (status) container?.classList.add(status);
+  const label = container?.querySelector("[data-reason-status]");
+  if (label) label.textContent = message;
+}
+async function flushPendingReasonSaves() {
+  const buttons = [...reasonSaveTimers.keys()].map((assetId) => {
+    const input = reviewReasonInput(assetId);
+    return input?.closest(".review-note")?.querySelector("[data-save-reason]");
+  }).filter(Boolean);
+  if (buttons.length) {
+    await Promise.all(buttons.map((button) => saveReviewReason(button, { silent: true })));
+  }
+  if (reasonSaveOperations.size) await Promise.allSettled([...reasonSaveOperations]);
+}
+
+
 async function updateAssetReview(button) {
   const assetId = button.dataset.assetId;
   const asset = state.currentNote?.assets.find((item) => item.asset_id === assetId);
-  if (!asset || asset.effective_review_status === button.dataset.reviewStatus) return;
+  if (!asset) return;
   const previousStatus = asset.effective_review_status;
   const previousReason = asset.human_review_reason || null;
+  const reason = draftReason(asset);
+  if (previousStatus === button.dataset.reviewStatus && reason === previousReason) {
+    showToast("状态和备注没有变化");
+    return;
+  }
+  clearReasonTimer(assetId);
   const card = button.closest(".image-review-card");
   card?.classList.add("is-saving");
   try {
-    await saveReview(assetId, button.dataset.reviewStatus, previousReason);
+    await saveReview(assetId, button.dataset.reviewStatus, reason);
     await refreshAfterReview();
     showToast("复核结果已保存", {
       label: "撤销",
@@ -378,54 +427,73 @@ async function updateAssetReview(button) {
   }
 }
 
-async function saveReviewReason(button) {
+async function saveReviewReason(button, { silent = false } = {}) {
   const assetId = button.dataset.assetId;
   const asset = state.currentNote?.assets.find((item) => item.asset_id === assetId);
   const input = button.closest(".review-note")?.querySelector("[data-review-reason]");
   if (!asset || !input) return;
+  clearReasonTimer(assetId);
   const previousReason = asset.human_review_reason || null;
-  const reason = input.value.trim() || null;
+  const reason = normalizeReason(input.value);
   if (reason === previousReason) {
-    showToast("备注没有变化");
+    setReasonStatus(input, previousReason ? "saved" : "", previousReason ? "已保存" : "");
+    if (!silent) showToast("备注没有变化");
     return;
   }
-  const card = button.closest(".image-review-card");
-  card?.classList.add("is-saving");
+  button.disabled = true;
+  setReasonStatus(input, "saving", "保存中…");
+  const operation = saveReview(assetId, asset.effective_review_status, reason);
+  reasonSaveOperations.add(operation);
   try {
-    await saveReview(assetId, asset.effective_review_status, reason);
-    await refreshAfterReview();
-    showToast("人工备注已保存", {
-      label: "撤销",
-      callback: async () => {
-        await saveReview(assetId, asset.effective_review_status, previousReason);
-        await refreshAfterReview();
-        showToast("已撤销备注修改");
-      },
-    });
+    await operation;
+    asset.human_review_reason = reason;
+    asset.human_review_status = asset.effective_review_status;
+    asset.review_source = "web_review";
+    input.dataset.savedReason = reason || "";
+    setReasonStatus(input, "saved", reason ? "已保存" : "已清空");
+    if (!silent) {
+      showToast("人工备注已保存", {
+        label: "撤销",
+        callback: async () => {
+          await saveReview(assetId, asset.effective_review_status, previousReason);
+          asset.human_review_reason = previousReason;
+          input.value = previousReason || "";
+          input.dataset.savedReason = previousReason || "";
+          setReasonStatus(input, previousReason ? "saved" : "", previousReason ? "已保存" : "");
+          showToast("已撤销备注修改");
+        },
+      });
+    }
   } catch (error) {
-    card?.classList.remove("is-saving");
-    showToast(error.message);
+    setReasonStatus(input, "error", "保存失败");
+    showToast(silent ? `备注自动保存失败：${error.message}` : error.message);
+  } finally {
+    reasonSaveOperations.delete(operation);
+    button.disabled = false;
   }
 }
 
 async function batchReview(status) {
   const note = state.currentNote;
   if (!note) return;
-  const changed = note.assets.filter((asset) => asset.effective_review_status !== status);
-  if (!changed.length) {
-    showToast("当前图片已经全部是该状态");
+  const changes = note.assets.map((asset) => ({ asset, reason: draftReason(asset) })).filter(
+    ({ asset, reason }) => asset.effective_review_status !== status || reason !== (asset.human_review_reason || null),
+  );
+  if (!changes.length) {
+    showToast("当前图片状态和备注都没有变化");
     return;
   }
-  if (!window.confirm(`确认将本篇 ${changed.length} 张图片全部标记为“${labels[status]}”吗？`)) return;
-  const previous = changed.map((asset) => ({
+  if (!window.confirm(`确认更新本篇 ${changes.length} 张图片并保存当前备注吗？`)) return;
+  const previous = changes.map(({ asset }) => ({
     assetId: asset.asset_id,
     status: asset.effective_review_status,
     reason: asset.human_review_reason || null,
   }));
+  changes.forEach(({ asset }) => clearReasonTimer(asset.asset_id));
   try {
-    await Promise.all(changed.map((asset) => saveReview(asset.asset_id, status, asset.human_review_reason || null)));
+    await Promise.all(changes.map(({ asset, reason }) => saveReview(asset.asset_id, status, reason)));
     await refreshAfterReview();
-    showToast(`已批量更新 ${changed.length} 张图片`, {
+    showToast(`已批量更新 ${changes.length} 张图片`, {
       label: "撤销",
       callback: async () => {
         await Promise.all(previous.map((item) => saveReview(item.assetId, item.status, item.reason)));
@@ -585,6 +653,9 @@ dialog.addEventListener("cancel", (event) => {
   if (!$("#image-viewer").hidden) {
     event.preventDefault();
     closeViewer();
+  } else if (reasonSaveTimers.size || reasonSaveOperations.size) {
+    event.preventDefault();
+    closeNote();
   }
 });
 dialog.addEventListener("close", () => {
@@ -607,6 +678,23 @@ $("#dialog-content").addEventListener("click", (event) => {
   const navigation = event.target.closest("[data-note-nav]");
   if (navigation) navigateNote(navigation.dataset.noteNav === "next" ? 1 : -1);
 });
+$("#dialog-content").addEventListener("input", (event) => {
+  if (!event.target.matches("[data-review-reason]")) return;
+  const input = event.target;
+  const assetId = input.dataset.assetId;
+  const button = input.closest(".review-note")?.querySelector("[data-save-reason]");
+  if (!assetId || !button) return;
+  clearReasonTimer(assetId);
+  const savedReason = normalizeReason(input.dataset.savedReason || "");
+  if (normalizeReason(input.value) === savedReason) {
+    setReasonStatus(input, savedReason ? "saved" : "", savedReason ? "已保存" : "");
+    return;
+  }
+  setReasonStatus(input, "dirty", "等待自动保存");
+  const timer = setTimeout(() => saveReviewReason(button, { silent: true }), 700);
+  reasonSaveTimers.set(assetId, timer);
+});
+
 $("#dialog-content").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || !event.target.matches("[data-review-reason]")) return;
   event.preventDefault();
@@ -663,6 +751,12 @@ $("#reindex-button").addEventListener("click", async (event) => {
     button.disabled = false;
     button.textContent = original;
   }
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!reasonSaveTimers.size && !reasonSaveOperations.size) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 
 new IntersectionObserver((entries) => {

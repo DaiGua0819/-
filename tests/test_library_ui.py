@@ -53,3 +53,8 @@ def test_library_ui_exposes_time_saving_review_controls() -> None:
     assert "human_review_reason || null" in script
     assert "state.notes.length < state.total" in script
     assert "暂无 AI 判断说明" in script
+    assert "reasonSaveTimers" in script
+    assert "data-saved-reason" in script
+    assert "flushPendingReasonSaves" in script
+    assert "beforeunload" in script
+    assert "700" in script

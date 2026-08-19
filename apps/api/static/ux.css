@@ -1076,3 +1076,49 @@ button.summary-card:hover {
     font-size: 11px;
   }
 }
+
+.review-note > label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+[data-reason-status] {
+  min-height: 15px;
+  font-weight: 500;
+  transition: color 0.16s ease;
+}
+
+.review-note.dirty [data-reason-status] {
+  color: var(--amber);
+}
+
+.review-note.dirty input {
+  border-color: rgba(170, 120, 28, 0.65);
+}
+
+.review-note.saving [data-reason-status] {
+  color: var(--blue);
+}
+
+.review-note.saving input {
+  background: var(--blue-soft);
+}
+
+.review-note.saved [data-reason-status] {
+  color: var(--green);
+}
+
+.review-note.error [data-reason-status] {
+  color: var(--coral);
+  font-weight: 700;
+}
+
+.review-note.error input {
+  border-color: var(--coral);
+}
+
+.review-note button:disabled {
+  background: var(--muted);
+}
