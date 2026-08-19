@@ -1,0 +1,75 @@
+# XVI 授权浏览器图片采集
+
+XVI 是一个以授权浏览器为边界的小红书线下品牌图片采集服务。第一阶段从飞书多维表格读取检索规则，通过 Docker 中的 Playwright 浏览器执行只读搜索、打开笔记、遍历轮播，并优先通过页面可见下载入口保存图片；无可见下载入口时保存渲染区域截图。
+
+## 当前阶段
+
+- 默认禁止真实来源访问：`SOURCE_ACCESS_MODE=disabled`
+- 第一阶段不接入视觉模型
+- 不读取隐藏页面状态、不解析网络响应、不直接请求 CDN
+- 不实现评论、点赞、收藏、关注、私信和发布
+- 所有真实来源 Live Smoke 必须人工在场并经过审批
+
+## Docker 构建和检查
+
+本项目当前提供**本地单容器 Bundle**：一个 `xvi` 容器内由 Supervisor 启动 PostgreSQL、Redis、FastAPI 和一次性 Browser Worker。该模式只用于本地开发和 Fixture 验证，生产环境仍建议拆分服务。
+
+首次运行先复制 Compose 使用的环境文件：
+
+```powershell
+Copy-Item .env.example .env
+docker compose build
+docker compose config
+docker compose run --rm --entrypoint pytest xvi -q
+docker compose run --rm --entrypoint ruff xvi check .
+docker compose run --rm --entrypoint ruff xvi format --check .
+docker compose run --rm --entrypoint mypy xvi src apps
+```
+
+一键启动全部本地服务：
+
+```powershell
+docker compose up -d xvi
+docker compose ps
+docker compose logs -f xvi
+```
+
+容器启动后，Supervisor 会依次管理以下进程：
+
+```text
+PostgreSQL  -> 127.0.0.1:5432
+Redis       -> 127.0.0.1:6379
+FastAPI     -> 0.0.0.0:8000
+Fixture Worker（执行一次后退出，不自动重复采集）
+```
+
+检查容器内服务：
+
+```powershell
+docker compose exec xvi supervisorctl status
+docker compose exec xvi pg_isready -h 127.0.0.1 -U xvi
+docker compose exec xvi redis-cli -h 127.0.0.1 ping
+docker compose exec xvi python -m xvi.cli config validate
+```
+
+如果需要重新执行一次 Fixture Worker：
+
+```powershell
+docker compose exec xvi supervisorctl start browser-worker
+```
+
+图片、Artifact、Profile、PostgreSQL 和 Redis 数据分别保存在 Docker named volumes 中。停止服务但保留数据：
+
+```powershell
+docker compose down
+```
+
+不要使用 `docker compose down -v`，否则会删除本地数据卷。
+
+## 文档
+
+- `docs/requirements/xvi-requirements.md`：当前需求基线
+- `docs/architecture/xvi-development-design.md`：技术架构
+- `docs/development/implementation-plan.md`：实施计划
+- `docs/runbooks/operations.md`：运行手册
+- `docs/decisions/adr-002-visible-download-or-rendered-capture.md`：原图下载与渲染截图策略

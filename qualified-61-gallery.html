@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>城市露营：符合要求的图片</title>
+<style>
+body{margin:0;background:#f3f4f6;font-family:Arial,"Microsoft YaHei",sans-serif;color:#1f2937}
+header{position:sticky;top:0;z-index:2;padding:16px 24px;background:#fff;border-bottom:1px solid #e5e7eb}
+h1{margin:0 0 6px;font-size:20px}p{margin:0;color:#6b7280;font-size:13px}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;padding:24px}
+figure{margin:0;padding:10px;background:#fff;border-radius:10px;box-shadow:0 1px 4px #0002}img{display:block;width:100%;height:360px;object-fit:contain;background:#111;border-radius:6px}figcaption{padding:8px 2px 0;font-size:12px;color:#6b7280;word-break:break-all}
+</style>
+</head>
+<body>
+<header><h1>城市露营：符合要求的图片（原统计 61 张）</h1><p>展示门店/品牌空间、露营场地整体布置、帐篷区、桌椅陈列和展示装置。请注意：这是此前统计口径的画廊，后续严格复核时可能会进一步排除普通生活照、食物特写及 AI 效果图。</p></header>
+<main class="gallery" id="gallery"></main>
+<script>
+const base='file:///C:/Users/xinli.wang/Documents/Codex/2026-08-03/qing-2/work/xiaohongshu/.data/assets/';
+const groups=[
+['114d75f1-18ef-44af-95f7-da4dc27960ab',['000-b4f9b2fb-9208-446b-be5e-a09512898ddf.jpg','001-13751ee9-ff48-4701-baf8-0b690731e2d0.jpg','003-9e489424-9e0c-4d3f-8a1e-2006b4c6580e.jpg','004-a2116bbb-3bb4-4509-8873-2b14af374877.jpg','005-c5d1704c-bee5-41f7-91e9-5e8321d78507.jpg','009-7e2e26c9-ce20-41fb-9c4c-f3fa362a0496.jpg','010-bdf303bf-7849-49d7-97b5-749f969158ea.jpg']],
+['92811520-43b2-43cf-aabd-02b4ac4671af',['000-3fdb1224-e12b-41ed-a155-7bb7b9ae054b.jpg','001-5f0b1a7b-c588-4306-ba93-f64f8ef1b059.jpg','002-722e64bc-16c8-42f6-af42-bee6ad2c87af.jpg','003-01a3625d-7bc0-4764-b586-fefc51f9a180.jpg','004-b9ade1d7-381a-40a5-9863-628c6d73cccb.jpg','005-15e4c2a8-bbfa-4218-a4b5-a9c6466dcb53.jpg','006-397c5618-fac5-4c7b-9afd-7bc41f604cb8.jpg','007-f096e180-acad-4b4d-aaee-1f3ccdb678e3.jpg']],
+['e742f26c-6607-46f1-b880-520e998772f9',['000-71d7661b-37af-4a7b-bb3b-c1b0a708c217.jpg','001-2b477db1-a631-47ce-854b-28dcd8fa0e1d.jpg','002-35ea7e12-706a-45fe-96ce-33e41864d832.jpg','003-3ccebdc3-02ce-411c-83df-ce74927b4478.jpg','004-486b89c4-d247-4df2-a87b-7c03a78a0fcd.jpg','005-4c0ecaa6-3a8e-4ccf-a30b-e61197524be1.jpg','006-fbb7ef9c-8396-470c-bea5-27e8d4274ffb.jpg','007-ccee1917-e7e1-4a7a-b6ba-53103746f082.jpg','008-eb2ef9d6-340d-4cf2-8e37-7cd81c7e6084.jpg','009-bf6e9397-26d2-4f06-a4bf-8b363c5f4e19.jpg','010-6c871af7-f8d5-4fa8-a460-24b4f56d4fa6.jpg','011-09c45bb0-b587-46b1-b708-77cd6f2e7744.jpg','012-6f14f84c-f380-445c-bd85-ed7d39b2e69b.jpg','013-3ba77fbd-4c35-495d-b8f3-75b1842ad6e9.jpg','014-d08903a0-cd07-4307-9192-6d7d5f406471.jpg','015-398c4400-b730-41d9-b36e-202bdef5e569.jpg']],
+['11a0a59d-8eff-4057-943c-c3d7f9efd4d4',['000-663eecc4-3e68-43d3-b4b7-af217739177f.jpg','001-e74c2fcb-e73b-4d51-9989-4332a08fb80e.jpg','002-07afbb79-ef98-4bdd-add3-e1e1137c84b8.jpg','003-e15d115b-152b-421f-b713-1abeecaece11.jpg','004-af48f4e8-06b4-4784-bf75-f9ad39152eb7.jpg','005-71edd528-a806-4fc6-95c3-e92a07591f21.jpg','006-f057b344-625d-4485-80f2-add94e47d119.jpg','007-3dc34fea-001b-4a55-8012-87c5a84f00a7.jpg']],
+['16261733-d1af-4688-981f-2b525f4db994',['000-e76238b1-4d64-4295-9e9e-ab4ca796dcd8.jpg','001-4d19b7fe-8b6a-4d6f-9fb0-5bb76a9e37aa.jpg','002-5d07258d-0b71-4a86-a320-4b358cec5621.jpg','003-0ff82de7-a441-4386-88cb-86b0d516ca65.jpg','004-1f292f90-cde3-48b9-8652-193668d0b20b.jpg','005-37df6dc8-bb63-4dd0-a396-a6a817d0059d.jpg','006-f2077f92-12e3-44b2-a59f-f1e036552a7d.jpg','007-9c66cc3b-6b52-4dda-8604-c1b4bbf5450f.jpg','008-528a7724-1c3e-49c4-b61e-343b8912a94a.jpg','009-a09f1556-1303-4485-b00c-175fc4251e69.jpg','010-7892ba2b-b8d4-47ab-a561-0f175a30e0cc.jpg','011-f1a4a103-c0b1-4215-8d0b-2d90ad983d86.jpg','012-17b0e9a5-9fdf-4f62-ba83-ae1d67fb0015.jpg','013-ded47f7c-7b26-4369-8386-9255b496d3a8.jpg','014-64c3835b-8d38-4a33-a62a-a0a56a494453.jpg','015-86f6d18a-35a4-42fb-9fd4-d910d01b9ce9.jpg','016-54a9a365-98e6-4f0e-aa3b-802f3b2add67.jpg','017-a15f6689-9fd2-49ae-aa3f-1e9447389c4d.jpg']],
+['deac1769-00ae-4cdb-b1bc-beb419644ced',['000-ddccfa23-dcf9-415e-98b5-4ac3e48a59e7.jpg','001-f33f604b-a19b-4d3b-ab21-28680a4e0450.jpg','002-54328eef-4730-4f9f-b1bc-96f4fe1c8811.jpg','003-76c141eb-736b-478c-814f-148aadc0bee8.jpg']]
+];
+const gallery=document.getElementById('gallery');let n=0;
+for(const [dir,files] of groups) for(const file of files){n++;const fig=document.createElement('figure');const img=document.createElement('img');img.loading='lazy';img.src=base+dir+'/'+file;img.alt='符合要求图片 '+n;const cap=document.createElement('figcaption');cap.textContent=n+'. '+dir+'/'+file;fig.append(img,cap);gallery.append(fig)}
+</script>
+</body>
+</html>

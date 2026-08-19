@@ -1,0 +1,66 @@
+version: 1.0.4
+source: xhs_web
+selectors:
+  login_required:
+    required: false
+    candidates:
+      - text_regex: "登录|Log in|扫码登录|手机号登录"
+  authenticated_marker:
+    required: false
+    candidates:
+      - css: "[data-xvi-authenticated='true']"
+  search_input:
+    candidates:
+      - css: "#search-input"
+      - css: "#search-input-in-feeds"
+  result_card:
+    candidates:
+      - css: "a[href*='/search_result/']"
+      - css: "[data-xvi='result-card']"
+  note_author_link:
+    required: false
+    candidates:
+      - css: "a.author[href*='/user/profile/']"
+      - css: "a[href*='/user/profile/']"
+  note_author_name:
+    required: false
+    candidates:
+      - css: "span.username"
+  note_container:
+    candidates:
+      - css: "[data-xvi='note-container']"
+      - css: ".note-container"
+  note_video:
+    required: false
+    candidates:
+      - css: "[data-xvi='note-video']"
+      - css: ".note-container video"
+  carousel_viewport:
+    candidates:
+      - css: "[data-xvi='carousel-viewport']"
+      - css: ".note-container .swiper-slide-active .note-slider-img"
+  carousel_pagination:
+    required: false
+    candidates:
+      - css: "[data-xvi='carousel-pagination']"
+      - css: ".note-container .swiper-pagination-fraction"
+      - css: ".note-container [class*='pagination'][class*='fraction']"
+  carousel_next:
+    required: false
+    candidates:
+      - css: ".arrow-controller.right:not(.forbidden)"
+      - role: button
+        name_regex: "下一张|Next"
+      - css: "[data-xvi='carousel-next']"
+  carousel_download:
+    required: false
+    candidates:
+      - role: button
+        name_regex: "下载|Download|保存图片|Save"
+      - css: "[data-xvi='carousel-download']"
+  note_close:
+    required: false
+    candidates:
+      - role: button
+        name_regex: "关闭|Close"
+      - css: "[data-xvi='note-close']"

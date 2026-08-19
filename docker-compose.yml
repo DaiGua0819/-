@@ -1,0 +1,30 @@
+services:
+  xvi:
+    image: xiaohongshu:all-in-one
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - postgres_data:/data/postgres
+      - redis_data:/data/redis
+      - xvi_artifacts:/data/artifacts
+      - xvi_assets:/data/assets
+      - xvi_profiles:/data/profiles
+      - feishu_cli_config:/data/feishu-cli
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U xvi && test \"$(redis-cli -h 127.0.0.1 ping)\" = PONG && python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  redis_data:
+  xvi_artifacts:
+  xvi_assets:
+  xvi_profiles:
+  feishu_cli_config:

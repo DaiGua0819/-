@@ -1,0 +1,2 @@
+[console_scripts]
+xvi = xvi.cli:app
