@@ -53,6 +53,31 @@ class Settings(BaseSettings):
     failure_screenshot_ttl_days: int = Field(default=14, ge=1, le=90)
     trace_ttl_days: int = Field(default=7, ge=1, le=30)
 
+    # 素材库索引只读取既有 Artifact；默认与图片资产处于同一持久化根目录。
+    library_db_path: Path | None = None
+    library_qualification_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    library_default_page_size: int = Field(default=24, ge=1, le=100)
+    library_max_page_size: int = Field(default=60, ge=1, le=200)
+
+    @property
+    def resolved_library_db_path(self) -> Path:
+        return self.library_db_path or self.resolved_browser_asset_root.parent / "library.sqlite3"
+
+    @property
+    def resolved_browser_asset_root(self) -> Path:
+        return self._workspace_fallback(self.browser_asset_root, Path(".data/assets"))
+
+    @property
+    def resolved_browser_artifact_root(self) -> Path:
+        return self._workspace_fallback(self.browser_artifact_root, Path(".data/artifacts"))
+
+    @staticmethod
+    def _workspace_fallback(configured_path: Path, workspace_path: Path) -> Path:
+        """Docker 保留 /data；Windows 本地 .env 若沿用 Docker 路径则回退到 .data。"""
+        if configured_path.exists() or not workspace_path.exists():
+            return configured_path
+        return workspace_path
+
     @model_validator(mode="after")
     def validate_security(self) -> Self:
         forbidden = {

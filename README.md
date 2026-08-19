@@ -10,6 +10,16 @@ XVI 是一个以授权浏览器为边界的小红书线下品牌图片采集服�
 - 不实现评论、点赞、收藏、关注、私信和发布
 - 所有真实来源 Live Smoke 必须人工在场并经过审批
 
+## 本地素材库（Pinterest 式浏览）
+
+已有 Artifact 与图片可在不重新访问小红书的前提下，投影为本地网页素材库：按笔记查看全量图片、按检索标签筛选、逐图复核、标记推送状态，并通过已保存的原笔记 URL 追溯来源。
+
+```powershell
+.\.venv-local\Scripts\python.exe -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8001
+```
+
+打开 `http://127.0.0.1:8001/` 即可查看。设计、数据模型和生产迁移边界见 `docs/architecture/material-library.md`。
+
 ## Docker 构建和检查
 
 本项目当前提供**本地单容器 Bundle**：一个 `xvi` 容器内由 Supervisor 启动 PostgreSQL、Redis、FastAPI 和一次性 Browser Worker。该模式只用于本地开发和 Fixture 验证，生产环境仍建议拆分服务。

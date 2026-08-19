@@ -21,7 +21,7 @@ from xvi.capture.frame_store import FrameStore
 from xvi.capture.manifest import ArtifactWriter
 from xvi.domain.enums import ErrorCode, SessionStatus
 from xvi.domain.errors import CaptureIncompleteError
-from xvi.domain.models import AssetMetadata, RunResult, SearchQuery, SearchResult
+from xvi.domain.models import AssetMetadata, NoteSnapshot, RunResult, SearchQuery, SearchResult
 
 DEFAULT_HOME_URL = "https://www.xiaohongshu.com"
 DEFAULT_SELECTOR_PATH = Path("configs/selectors/xhs_web.yaml")
@@ -327,6 +327,7 @@ async def execute_query(
     artifact.append_step("collect_results", "done", count=len(pending_candidates))
 
     assets: list[AssetMetadata] = []
+    captured_notes: list[NoteSnapshot] = []
     processed_candidates: list[SearchResult] = []
     seen_note_ids = {
         note_id
@@ -478,6 +479,8 @@ async def execute_query(
                     )
                 if candidate_asset_count == 0:
                     raise CaptureIncompleteError("图片笔记没有采集到任何图片")
+                # Result 需要持久化笔记快照，确保每组图片均能回溯到候选笔记 URL。
+                captured_notes.append(note)
                 image_note_count += 1
                 artifact.append_step(
                     "capture_note",
@@ -561,6 +564,7 @@ async def execute_query(
         run_id=run_id,
         query=query,
         candidates=processed_candidates,
+        notes=captured_notes,
         assets=assets,
         capture_complete=capture_complete,
         error_code=result_error_code,

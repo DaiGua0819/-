@@ -94,6 +94,9 @@ class RunResult(BaseModel):
     run_id: UUID
     query: SearchQuery
     candidates: list[SearchResult] = Field(default_factory=list)
+    # 将笔记快照写入 Result，使素材可稳定追溯到原始小红书链接。
+    # AssetMetadata 仅持有 note_id，不能单独承担来源链接的留存职责。
+    notes: list[NoteSnapshot] = Field(default_factory=list)
     assets: list[AssetMetadata] = Field(default_factory=list)
     capture_complete: bool = False
     error_code: str | None = None

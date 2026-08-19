@@ -14,6 +14,8 @@ async def test_fixture_capture_saves_multiple_assets(tmp_path: Path) -> None:
         query_text="Fixture 品牌 快闪",
     )
     assert len(result.candidates) == 1
+    assert len(result.notes) == 1
+    assert result.notes[0].source_url == result.candidates[0].normalized_url
     assert len(result.assets) == 3
     assert result.capture_complete is True
     assert {asset.capture_method.value for asset in result.assets} <= {

@@ -1,4 +1,5 @@
 import argparse
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +110,10 @@ async def test_execute_query_captures_all_candidates(tmp_path: Path) -> None:
     assert exit_code == 0
     assert result.capture_complete is True
     assert result.error_code is None
+    assert [note.source_url for note in result.notes] == [
+        "https://example.test/note-1",
+        "https://example.test/note-2",
+    ]
     assert [asset.search_keyword for asset in result.assets] == ["品牌 快闪", "品牌 快闪"]
     assert [asset.author_id for asset in result.assets] == ["author-1", "author-2"]
     assert adapter.opened_urls == [
@@ -119,5 +124,10 @@ async def test_execute_query_captures_all_candidates(tmp_path: Path) -> None:
 
     result_path = tmp_path / "artifacts" / str(result.run_id) / "result.json"
     result_data = result_path.read_text(encoding="utf-8")
-    assert result_data.count('"asset_id"') == 2
-    assert result_data.count('"author_id"') == 2
+    payload = json.loads(result_data)
+    assert len(payload["assets"]) == 2
+    assert len(payload["notes"]) == 2
+    assert [note["source_url"] for note in payload["notes"]] == [
+        "https://example.test/note-1",
+        "https://example.test/note-2",
+    ]

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f2eb" />
+    <title>XVI · 线下活动素材库</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="回到素材库首页">
+        <span class="brand-mark">X</span>
+        <span><b>XVI</b><small>Visual Intelligence</small></span>
+      </a>
+      <label class="search-box" for="search-input">
+        <span aria-hidden="true">⌕</span>
+        <input id="search-input" type="search" placeholder="搜索品牌、关键词或作者" autocomplete="off" />
+        <kbd>⌘ K</kbd>
+      </label>
+      <div class="topbar-meta"><span class="live-dot"></span> 本地素材库</div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="筛选条件">
+        <div class="side-heading"><span>浏览素材</span><button id="reset-filters" class="text-button">重置</button></div>
+        <section class="filter-section">
+          <p class="filter-label">推送状态</p>
+          <label class="switch-row"><input id="only-new" type="checkbox" /><span class="switch"></span><span>仅看未推送</span></label>
+        </section>
+        <section class="filter-section">
+          <p class="filter-label">合规进度</p>
+          <div id="status-filters" class="filter-stack">
+            <button data-status="" class="filter-button active"><span class="filter-bullet all"></span>全部素材</button>
+            <button data-status="eligible" class="filter-button"><span class="filter-bullet eligible"></span>满足推送阈值</button>
+            <button data-status="needs_review" class="filter-button"><span class="filter-bullet review"></span>待复核</button>
+            <button data-status="below_threshold" class="filter-button"><span class="filter-bullet below"></span>未达阈值</button>
+          </div>
+        </section>
+        <section class="filter-section tags-section">
+          <p class="filter-label">检索标签</p>
+          <div id="tag-filters" class="tag-list" aria-live="polite"></div>
+        </section>
+        <p class="sidebar-footnote">素材仅来自已入库的采集结果；页面不会主动访问小红书。</p>
+      </aside>
+
+      <section class="content">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">INTERNAL VISUAL LIBRARY</p>
+            <h1>把每次活动现场，<em>变成可检索的灵感。</em></h1>
+            <p class="hero-copy">按笔记查看完整配图、快速复核，并从原始链接回到小红书内容。</p>
+          </div>
+          <button id="reindex-button" class="outline-button" title="只读取本地 Artifact，不访问小红书">↻ 同步本地素材</button>
+        </section>
+
+        <section id="summary" class="summary-grid" aria-label="素材库概览">
+          <article class="summary-card skeleton"></article><article class="summary-card skeleton"></article>
+          <article class="summary-card skeleton"></article><article class="summary-card skeleton"></article>
+        </section>
+
+        <div class="result-toolbar">
+          <p id="result-count">正在读取素材…</p>
+          <p class="threshold-note">整篇笔记全部图片完成判定且 ≥60% 符合，才进入“满足推送阈值”。</p>
+        </div>
+        <section id="masonry" class="masonry" aria-live="polite"></section>
+        <div id="empty-state" class="empty-state" hidden>
+          <span>◇</span><h2>没有匹配的笔记</h2><p>试试清除筛选或改用更短的关键词。</p>
+        </div>
+        <div class="load-more-wrap"><button id="load-more" class="outline-button" hidden>加载更多</button></div>
+      </section>
+    </main>
+
+    <dialog id="note-dialog" class="note-dialog">
+      <div class="dialog-shell">
+        <button id="close-dialog" class="icon-button" aria-label="关闭详情">×</button>
+        <div id="dialog-content" class="dialog-content"></div>
+      </div>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

@@ -10,7 +10,7 @@ from xvi.adapters.source.fixture.html import FIXTURE_HTML
 from xvi.browser.selector_registry import SelectorRegistry
 from xvi.capture.frame_store import FrameStore
 from xvi.capture.manifest import ArtifactWriter
-from xvi.domain.models import AssetMetadata, RunResult, SearchQuery
+from xvi.domain.models import AssetMetadata, NoteSnapshot, RunResult, SearchQuery
 
 
 async def run_fixture_capture(
@@ -38,6 +38,7 @@ async def run_fixture_capture(
     artifact.append_step("launch_fixture_browser", "started")
 
     assets: list[AssetMetadata] = []
+    notes: list[NoteSnapshot] = []
     candidates = []
     capture_complete = False
     async with async_playwright() as playwright:
@@ -51,6 +52,7 @@ async def run_fixture_capture(
         artifact.append_step("collect_results", "done", count=len(candidates))
         if candidates:
             note = await adapter.open_note(page, candidates[0])
+            notes.append(note)
             artifact.append_step("open_note", "done", title=note.title)
             async for asset in adapter.iter_rendered_frames(page, note):
                 assets.append(asset)
@@ -77,6 +79,7 @@ async def run_fixture_capture(
         run_id=run_id,
         query=query,
         candidates=candidates,
+        notes=notes,
         assets=assets,
         capture_complete=capture_complete,
     )
