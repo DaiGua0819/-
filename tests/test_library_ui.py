@@ -48,3 +48,8 @@ def test_library_ui_exposes_time_saving_review_controls() -> None:
     assert "data-review-status" in script
     assert "撤销" in script
     assert "IntersectionObserver" in script
+    assert "reviewEvidence" in script
+    assert "data-save-reason" in script
+    assert "human_review_reason || null" in script
+    assert "state.notes.length < state.total" in script
+    assert "暂无 AI 判断说明" in script

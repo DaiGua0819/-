@@ -48,6 +48,16 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function formatDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -121,11 +131,16 @@ function renderCard(note) {
   const reviewedPercent = note.asset_count ? Math.round((reviewed / note.asset_count) * 100) : 0;
   const acceptedPercent = note.asset_count ? Math.round((note.accepted_count / note.asset_count) * 100) : 0;
   const delivery = note.delivery_status === "delivered" ? `<span class="delivery-marker">已推送</span>` : "";
+  const metadata = [
+    `${note.asset_count} 张图片`,
+    note.author_name,
+    note.last_captured_at ? `采集 ${formatDate(note.last_captured_at)}` : "",
+  ].filter(Boolean).map((item) => `<span>${escapeHtml(item)}</span>`).join("<i>·</i>");
   return `<button class="note-card" type="button" data-note-key="${escapeHtml(note.note_key)}" aria-label="查看笔记：${escapeHtml(title)}">
     <div class="cover-wrap">${image}<span class="status-badge ${note.eligibility}">${labels[note.eligibility] || "待复核"}</span>${delivery}</div>
     <div class="card-body">
       <p class="card-title">${escapeHtml(title)}</p>
-      <div class="card-meta"><span>${note.asset_count} 张图片</span><span>·</span><span>${escapeHtml(note.author_name || "作者待补充")}</span></div>
+      <div class="card-meta">${metadata}</div>
       <div class="review-progress" title="已复核 ${reviewed}/${note.asset_count} 张"><span style="width:${reviewedPercent}%"><i style="width:${reviewedPercent ? Math.min(100, Math.round((acceptedPercent / reviewedPercent) * 100)) : 0}%"></i></span></div>
       <div class="card-review-summary"><span>${note.accepted_count} 符合</span><span>${note.rejected_count} 不符合</span><span>${note.needs_review_count} 待定</span></div>
       <div class="card-tags">${tags}</div>
@@ -145,9 +160,11 @@ function renderSummary(summary) {
     [summary.needs_review_count, "待复核笔记", "", "needs_review"],
     [summary.new_count, "尚未推送", "", "new"],
   ];
-  $("#summary").innerHTML = items.map(([number, label, css, filter]) =>
-    `<button type="button" class="summary-card ${css}" data-summary-filter="${filter}"><span class="number">${number}</span><span class="label">${label}</span>${filter ? '<span class="summary-arrow">查看 →</span>' : ""}</button>`
-  ).join("");
+  $("#summary").innerHTML = items.map(([number, label, css, filter]) => {
+    const tag = filter ? "button" : "article";
+    const attributes = filter ? `type="button" data-summary-filter="${filter}"` : "";
+    return `<${tag} ${attributes} class="summary-card ${css}"><span class="number">${number}</span><span class="label">${label}</span>${filter ? '<span class="summary-arrow">查看 →</span>' : ""}</${tag}>`;
+  }).join("");
 }
 
 async function loadSummary() {
@@ -247,25 +264,45 @@ function reviewButtons(asset) {
   ].map(([status, label]) => `<button type="button" class="review-choice ${asset.effective_review_status === status ? "active" : ""}" data-review-status="${status}" data-asset-id="${asset.asset_id}" aria-pressed="${asset.effective_review_status === status}">${label}</button>`).join("");
 }
 
+function reviewEvidence(asset) {
+  const aiStatus = asset.ai_requirement_status ? labels[asset.ai_requirement_status] : "未判断";
+  const aiReason = asset.ai_requirement_reason || "暂无 AI 判断说明";
+  const humanSource = asset.review_source === "web_review" ? "人工复核" : "历史复核";
+  const humanDecision = asset.human_review_status
+    ? `<p class="human-evidence"><span>${humanSource}</span><strong class="${asset.human_review_status}">${labels[asset.human_review_status] || "待定"}</strong></p>`
+    : "";
+  return `<div class="review-evidence"><p class="ai-evidence"><span>AI 建议</span><strong class="${asset.ai_requirement_status || "unknown"}">${aiStatus}</strong></p><p class="evidence-reason">${escapeHtml(aiReason)}</p>${humanDecision}</div>`;
+}
+
 function currentNotePosition() {
   const index = state.notes.findIndex((note) => note.note_key === state.currentNoteKey);
-  return { index, total: state.notes.length };
+  const loaded = state.notes.length;
+  return { index, loaded, total: state.total || loaded };
 }
 
 function renderNoteDetail(note, scrollTop = 0) {
   const source = note.source_url
     ? `<a class="external-link" href="${escapeHtml(note.source_url)}" target="_blank" rel="noreferrer">查看小红书原笔记 ↗</a><button type="button" class="copy-link-button" data-copy-link>复制链接</button>`
     : `<span class="detail-status">历史产物暂未恢复原链接</span>`;
-  const images = note.assets.map((asset, index) => `<article class="image-review-card ${asset.effective_review_status}">
-    <button type="button" class="image-open-button" data-image-index="${index}" aria-label="放大查看第 ${asset.source_index + 1} 张图片">
-      <img src="${escapeHtml(asset.media_url)}" loading="lazy" decoding="async" alt="笔记图片 ${asset.source_index + 1}" />
-      <span class="zoom-hint">放大查看</span>
-    </button>
-    <footer class="image-review-footer"><span class="image-number">#${asset.source_index + 1}</span><div class="review-choices" role="group" aria-label="图片 ${asset.source_index + 1} 复核结果">${reviewButtons(asset)}</div></footer>
-  </article>`).join("");
-  const { index, total } = currentNotePosition();
+  const images = note.assets.map((asset, index) => {
+    const reasonId = `review-reason-${asset.asset_id}`;
+    const humanReason = asset.human_review_reason || "";
+    return `<article class="image-review-card ${asset.effective_review_status}">
+      <button type="button" class="image-open-button" data-image-index="${index}" aria-label="放大查看第 ${asset.source_index + 1} 张图片">
+        <img src="${escapeHtml(asset.media_url)}" loading="lazy" decoding="async" alt="笔记图片 ${asset.source_index + 1}" />
+        <span class="zoom-hint">放大查看</span>
+      </button>
+      <footer class="image-review-footer">
+        <span class="image-number">#${asset.source_index + 1}</span>
+        ${reviewEvidence(asset)}
+        <div class="review-choices" role="group" aria-label="图片 ${asset.source_index + 1} 复核结果">${reviewButtons(asset)}</div>
+        <div class="review-note"><label for="${escapeHtml(reasonId)}">人工备注</label><div><input id="${escapeHtml(reasonId)}" data-review-reason data-asset-id="${escapeHtml(asset.asset_id)}" value="${escapeHtml(humanReason)}" maxlength="500" placeholder="补充符合或不符合的原因" /><button type="button" data-save-reason data-asset-id="${escapeHtml(asset.asset_id)}">保存</button></div></div>
+      </footer>
+    </article>`;
+  }).join("");
+  const { index, loaded, total } = currentNotePosition();
   const canPrevious = index > 0;
-  const canNext = index >= 0 && index < total - 1;
+  const canNext = index >= 0 && (index < loaded - 1 || loaded < total);
   const deliveryLabel = note.delivery_status === "delivered" ? "撤销已推送" : "标记为已推送";
   const reviewed = note.accepted_count + note.rejected_count;
   const ratio = note.qualifying_ratio == null ? "—" : `${Math.round(note.qualifying_ratio * 100)}%`;
@@ -308,11 +345,11 @@ async function refreshAfterReview() {
   if (state.currentNoteKey) await openNote(state.currentNoteKey, { preserveScroll: true });
 }
 
-async function saveReview(assetId, status) {
+async function saveReview(assetId, status, reason = null) {
   return api(`/api/v1/library/assets/${assetId}/review`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status, reviewer: "网页复核" }),
+    body: JSON.stringify({ status, reviewer: "网页复核", reason }),
   });
 }
 
@@ -321,17 +358,48 @@ async function updateAssetReview(button) {
   const asset = state.currentNote?.assets.find((item) => item.asset_id === assetId);
   if (!asset || asset.effective_review_status === button.dataset.reviewStatus) return;
   const previousStatus = asset.effective_review_status;
+  const previousReason = asset.human_review_reason || null;
   const card = button.closest(".image-review-card");
   card?.classList.add("is-saving");
   try {
-    await saveReview(assetId, button.dataset.reviewStatus);
+    await saveReview(assetId, button.dataset.reviewStatus, previousReason);
     await refreshAfterReview();
     showToast("复核结果已保存", {
       label: "撤销",
       callback: async () => {
-        await saveReview(assetId, previousStatus);
+        await saveReview(assetId, previousStatus, previousReason);
         await refreshAfterReview();
         showToast("已撤销上次复核");
+      },
+    });
+  } catch (error) {
+    card?.classList.remove("is-saving");
+    showToast(error.message);
+  }
+}
+
+async function saveReviewReason(button) {
+  const assetId = button.dataset.assetId;
+  const asset = state.currentNote?.assets.find((item) => item.asset_id === assetId);
+  const input = button.closest(".review-note")?.querySelector("[data-review-reason]");
+  if (!asset || !input) return;
+  const previousReason = asset.human_review_reason || null;
+  const reason = input.value.trim() || null;
+  if (reason === previousReason) {
+    showToast("备注没有变化");
+    return;
+  }
+  const card = button.closest(".image-review-card");
+  card?.classList.add("is-saving");
+  try {
+    await saveReview(assetId, asset.effective_review_status, reason);
+    await refreshAfterReview();
+    showToast("人工备注已保存", {
+      label: "撤销",
+      callback: async () => {
+        await saveReview(assetId, asset.effective_review_status, previousReason);
+        await refreshAfterReview();
+        showToast("已撤销备注修改");
       },
     });
   } catch (error) {
@@ -349,14 +417,18 @@ async function batchReview(status) {
     return;
   }
   if (!window.confirm(`确认将本篇 ${changed.length} 张图片全部标记为“${labels[status]}”吗？`)) return;
-  const previous = changed.map((asset) => [asset.asset_id, asset.effective_review_status]);
+  const previous = changed.map((asset) => ({
+    assetId: asset.asset_id,
+    status: asset.effective_review_status,
+    reason: asset.human_review_reason || null,
+  }));
   try {
-    await Promise.all(changed.map((asset) => saveReview(asset.asset_id, status)));
+    await Promise.all(changed.map((asset) => saveReview(asset.asset_id, status, asset.human_review_reason || null)));
     await refreshAfterReview();
     showToast(`已批量更新 ${changed.length} 张图片`, {
       label: "撤销",
       callback: async () => {
-        await Promise.all(previous.map(([assetId, previousStatus]) => saveReview(assetId, previousStatus)));
+        await Promise.all(previous.map((item) => saveReview(item.assetId, item.status, item.reason)));
         await refreshAfterReview();
         showToast("已撤销批量复核");
       },
@@ -428,10 +500,15 @@ function navigateViewer(direction) {
   if (next >= 0 && next < (state.currentNote?.assets.length || 0)) showViewer(next);
 }
 
-function navigateNote(direction) {
+async function navigateNote(direction) {
   const { index } = currentNotePosition();
-  const target = state.notes[index + direction];
-  if (target) openNote(target.note_key);
+  let target = state.notes[index + direction];
+  if (direction > 0 && !target && index >= 0 && state.notes.length < state.total) {
+    await loadNotes({ append: true });
+    const refreshedIndex = state.notes.findIndex((note) => note.note_key === state.currentNoteKey);
+    target = state.notes[refreshedIndex + direction];
+  }
+  if (target) await openNote(target.note_key);
 }
 
 function openFilters() {
@@ -518,6 +595,8 @@ dialog.addEventListener("close", () => {
 $("#dialog-content").addEventListener("click", (event) => {
   const review = event.target.closest("[data-review-status]");
   if (review) updateAssetReview(review);
+  const reasonButton = event.target.closest("[data-save-reason]");
+  if (reasonButton) saveReviewReason(reasonButton);
   const batch = event.target.closest("[data-batch-review]");
   if (batch) batchReview(batch.dataset.batchReview);
   const delivery = event.target.closest("#delivery-button");
@@ -528,6 +607,13 @@ $("#dialog-content").addEventListener("click", (event) => {
   const navigation = event.target.closest("[data-note-nav]");
   if (navigation) navigateNote(navigation.dataset.noteNav === "next" ? 1 : -1);
 });
+$("#dialog-content").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !event.target.matches("[data-review-reason]")) return;
+  event.preventDefault();
+  const button = event.target.closest(".review-note")?.querySelector("[data-save-reason]");
+  if (button) saveReviewReason(button);
+});
+
 $("#toast-action").addEventListener("click", async () => {
   const callback = toastCallback;
   toastCallback = null;
