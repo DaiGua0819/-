@@ -29,10 +29,10 @@ DEFAULT_PROFILE_DIR = Path(".data/profiles/xhs-local")
 DEFAULT_ASSET_ROOT = Path(".data/assets")
 DEFAULT_ARTIFACT_ROOT = Path(".data/artifacts")
 DAEMON_START_TIMEOUT_SECONDS = 30
-MAX_IMAGE_NOTES = 40
+MAX_IMAGE_NOTES = 500
 MAX_EMPTY_RESULT_SCROLLS = 3
 MAX_SEARCH_SCROLLS = 30
-MAX_INSPECTED_CANDIDATES = 200
+MAX_INSPECTED_CANDIDATES = 500
 
 
 class DaemonEndpoint(TypedDict):
@@ -40,6 +40,56 @@ class DaemonEndpoint(TypedDict):
     port: int
     token: str
     pid: int
+
+
+def compact_filter_extraction(result: dict[str, object]) -> dict[str, object]:
+    summary: dict[str, object] = {
+        key: result.get(key)
+        for key in (
+            "query",
+            "page_url",
+            "hover_opened",
+            "panel_found",
+            "all_expected_present",
+            "expected_group_count",
+            "extracted_group_count",
+            "expected_option_count",
+            "extracted_option_count",
+            "missing",
+            "screenshot_ocr_used",
+            "details_opened",
+            "cards_collected",
+        )
+    }
+    group_summaries: list[dict[str, object]] = []
+    raw_groups = result.get("groups")
+    if isinstance(raw_groups, list):
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            option_summaries: list[dict[str, object]] = []
+            raw_options = raw_group.get("options")
+            if isinstance(raw_options, list):
+                for raw_option in raw_options:
+                    if not isinstance(raw_option, dict):
+                        continue
+                    option_summaries.append(
+                        {
+                            "label": raw_option.get("label"),
+                            "found": raw_option.get("found"),
+                            "selected": raw_option.get("selected"),
+                            "product_selectable": raw_option.get("product_selectable"),
+                        }
+                    )
+            group_summaries.append(
+                {
+                    "heading": raw_group.get("heading"),
+                    "found": raw_group.get("found"),
+                    "options": option_summaries,
+                }
+            )
+    summary["groups"] = group_summaries
+    return summary
 
 
 class LocalBrowserDaemon:
@@ -60,6 +110,7 @@ class LocalBrowserDaemon:
         self.stop_event = asyncio.Event()
         self.command_lock = asyncio.Lock()
         self.endpoint_token = secrets.token_urlsafe(32)
+        self.last_filter_extraction: dict[str, object] | None = None
 
     async def start(self) -> None:
         profile_dir = self.args.profile_dir.resolve()
@@ -137,9 +188,43 @@ class LocalBrowserDaemon:
                     "status": "running",
                     "pid": os.getpid(),
                     "page_url": self.page.url if self.page is not None else None,
+                    "last_filter_extraction": self.last_filter_extraction,
                 }
             elif action == "probe":
                 response = {"ok": True, "probe": await self._probe_selectors()}
+            elif action == "search":
+                query = request.get("query")
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError("控制请求缺少 query")
+                async with self.command_lock:
+                    await self._open_search(query.strip())
+                response = {
+                    "ok": True,
+                    "page_url": self.page.url if self.page is not None else None,
+                    "query": query.strip(),
+                }
+            elif action == "filter_preview":
+                query = request.get("query")
+                filters = request.get("filters")
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError("控制请求缺少 query")
+                if filters is not None and not isinstance(filters, dict):
+                    raise ValueError("控制请求 filters 必须是对象")
+                async with self.command_lock:
+                    filter_result = await self._filter_preview(query.strip(), filters)
+                response = {"ok": True, "result": filter_result}
+            elif action == "extract_filter_elements":
+                query = request.get("query")
+                include_dom = request.get("include_dom") is True
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError("控制请求缺少 query")
+                async with self.command_lock:
+                    filter_elements_result = await self._extract_filter_elements(
+                        query.strip(),
+                        include_dom=include_dom,
+                    )
+                    self.last_filter_extraction = compact_filter_extraction(filter_elements_result)
+                response = {"ok": True, "result": filter_elements_result}
             elif action == "run":
                 query = request.get("query")
                 authorization_reference = request.get("authorization_reference")
@@ -148,14 +233,14 @@ class LocalBrowserDaemon:
                 if not isinstance(authorization_reference, str):
                     authorization_reference = None
                 async with self.command_lock:
-                    exit_code, result = await self._run_query(
+                    exit_code, run_result = await self._run_query(
                         query.strip(),
                         authorization_reference,
                     )
                 response = {
                     "ok": True,
                     "exit_code": exit_code,
-                    "result": result.model_dump(mode="json"),
+                    "result": run_result.model_dump(mode="json"),
                 }
             elif action == "close":
                 response = {"ok": True, "exit_code": 0, "status": "closing"}
@@ -171,6 +256,92 @@ class LocalBrowserDaemon:
         await writer.wait_closed()
         if close_requested:
             self.stop_event.set()
+
+    async def _open_search(self, query_text: str) -> None:
+        if self.page is None:
+            raise RuntimeError("本地浏览器页面尚未就绪")
+        await self.page.goto(
+            DEFAULT_HOME_URL,
+            wait_until="domcontentloaded",
+            timeout=self.args.timeout_ms,
+        )
+        session = await self.adapter.ensure_session(self.page)
+        if session.status != SessionStatus.AUTHENTICATED:
+            raise RuntimeError(f"当前 CloakBrowser 未确认登录：{session.status.value}")
+        query = SearchQuery(text=query_text)
+        search_input = await self.registry.wait_for_visible(
+            self.page,
+            "search_input",
+            timeout_ms=self.args.timeout_ms,
+        )
+        if search_input is None:
+            raise RuntimeError("搜索输入框不可见")
+        await search_input.fill(query_text)
+        await self.page.keyboard.press("Enter")
+        await self.page.wait_for_timeout(800)
+        await self.adapter.ensure_search_context(self.page, query)
+
+    async def _filter_preview(
+        self,
+        query_text: str,
+        filters: dict[str, str] | None,
+    ) -> dict[str, object]:
+        """只验收搜索筛选；复用同一搜索页，不进入详情、不写入素材库。"""
+
+        if self.page is None:
+            raise RuntimeError("本地浏览器页面尚未就绪")
+        await self.page.goto(
+            DEFAULT_HOME_URL,
+            wait_until="domcontentloaded",
+            timeout=self.args.timeout_ms,
+        )
+        session = await self.adapter.ensure_session(self.page)
+        if session.status != SessionStatus.AUTHENTICATED:
+            raise RuntimeError(f"当前 CloakBrowser 未确认登录：{session.status.value}")
+        query = SearchQuery(text=query_text)
+        await self.adapter.open_search_results(self.page, query)
+        result = await self.adapter.apply_search_filters(self.page, filters)
+        result.update({"query": query_text, "page_url": self.page.url})
+        return result
+
+    async def _extract_filter_elements(
+        self,
+        query_text: str,
+        *,
+        include_dom: bool = False,
+    ) -> dict[str, object]:
+        """只读提取悬停筛选浮层，不点击选项、不读取卡片、不进入详情。"""
+
+        if self.page is None:
+            raise RuntimeError("本地浏览器页面尚未就绪")
+        query = SearchQuery(text=query_text)
+        reuse_current_search = False
+        if "/search_result" in self.page.url:
+            search_input = await self.registry.maybe_visible(self.page, "search_input")
+            if search_input is not None:
+                try:
+                    reuse_current_search = (
+                        await search_input.input_value()
+                    ).strip() == query_text.strip()
+                except Exception:
+                    reuse_current_search = False
+
+        if not reuse_current_search:
+            await self.page.goto(
+                DEFAULT_HOME_URL,
+                wait_until="domcontentloaded",
+                timeout=self.args.timeout_ms,
+            )
+            session = await self.adapter.ensure_session(self.page)
+            if session.status != SessionStatus.AUTHENTICATED:
+                raise RuntimeError(f"当前 CloakBrowser 未确认登录：{session.status.value}")
+            await self.adapter.open_search_results(self.page, query)
+        result = await self.adapter.extract_filter_elements(
+            self.page,
+            include_outer_html=include_dom,
+        )
+        result.update({"query": query_text, "page_url": self.page.url})
+        return result
 
     async def _run_query(
         self,
@@ -261,6 +432,26 @@ class LocalBrowserDaemon:
         temporary_path.replace(self.endpoint_path)
 
 
+def _capture_error_code(message: str) -> str:
+    known_codes = (
+        "CARD_NOTE_ID_MISSING",
+        "CARD_AUTHOR_ID_MISSING",
+        "CARD_PUBLISHED_AT_MISSING",
+        "DETAIL_OPEN_FAILED",
+        "NOTE_ACCESS_BLOCKED_300031",
+        "NOTE_ID_MISMATCH",
+        "DETAIL_AUTHOR_ID_MISSING",
+        "AUTHOR_ID_MISMATCH",
+        "TITLE_MISSING",
+        "PAGE_STRUCTURE_CHANGED",
+        "IMAGE_COUNT_MISMATCH",
+    )
+    for code in known_codes:
+        if code in message:
+            return code
+    return ErrorCode.CAPTURE_INCOMPLETE.value
+
+
 async def execute_query(
     *,
     args: argparse.Namespace,
@@ -273,6 +464,7 @@ async def execute_query(
 ) -> tuple[int, RunResult]:
     if not authorization_reference:
         raise ValueError("真实搜索必须提供 --authorization-reference")
+    max_notes = int(getattr(args, "max_notes", MAX_IMAGE_NOTES))
 
     run_id = uuid4()
     artifact = ArtifactWriter(args.artifact_root.resolve(), run_id)
@@ -289,7 +481,7 @@ async def execute_query(
             "browser_backend": browser_backend,
             "stealth_args": False,
             "humanize": False,
-            "max_image_notes": MAX_IMAGE_NOTES,
+            "max_image_notes": max_notes,
             "skip_video_notes": True,
         }
     )
@@ -343,9 +535,10 @@ async def execute_query(
     run_incomplete = False
     search_context_failed = False
     stop_reason = "all_candidates_processed"
+    detail_page: Page | None = None
 
     while True:
-        if is_live_adapter and image_note_count >= MAX_IMAGE_NOTES:
+        if is_live_adapter and image_note_count >= max_notes:
             stop_reason = "image_note_limit_reached"
             break
         if is_live_adapter and pending_index >= MAX_INSPECTED_CANDIDATES:
@@ -426,7 +619,9 @@ async def execute_query(
                     query,
                     expected_url=search_results_url,
                 )
-                note_page = await page.context.new_page()
+                if detail_page is None or detail_page.is_closed():
+                    detail_page = await page.context.new_page()
+                note_page = detail_page
                 child_page_created = True
 
             note = await adapter.open_note(note_page, candidate)
@@ -443,13 +638,16 @@ async def execute_query(
 
             if is_live_adapter:
                 media_type = await adapter.detect_note_media(note_page)
+                note.note_type = media_type
                 if media_type == "video":
                     skipped_video = True
                     skipped_video_count += 1
                     artifact.append_step(
                         "skip_note",
                         "done",
-                        reason="pure_video",
+                        reason="VIDEO_PRESENT",
+                        error_code="VIDEO_PRESENT",
+                        platform_note_id=candidate.platform_note_id,
                         source_url=candidate.normalized_url,
                         final_url=note_page.url,
                         result_rank=candidate.result_rank,
@@ -496,17 +694,24 @@ async def execute_query(
             artifact.append_step(
                 "capture_note",
                 "failed",
+                stage="capture_note",
+                platform_note_id=candidate.platform_note_id,
                 source_url=candidate.normalized_url,
                 result_rank=candidate.result_rank,
-                error_code=ErrorCode.CAPTURE_INCOMPLETE.value,
+                error_code=_capture_error_code(str(exc)),
                 error=str(exc),
+                retryable=True,
             )
         finally:
             try:
                 close_method = None
                 if child_page_created:
-                    await note_page.close()
-                    close_method = "close_child_page"
+                    if getattr(args, "keep_note_pages", False):
+                        close_method = "reuse_child_page"
+                    else:
+                        await note_page.close()
+                        detail_page = None
+                        close_method = "close_child_page"
                 elif note_opened:
                     await adapter.close_note(note_page)
                     close_method = "adapter_close"
@@ -678,7 +883,11 @@ async def send_browser_command(
     command: dict[str, object],
 ) -> dict[str, object]:
     endpoint = _load_endpoint(path)
-    reader, writer = await asyncio.open_connection(endpoint["host"], endpoint["port"])
+    reader, writer = await asyncio.open_connection(
+        endpoint["host"],
+        endpoint["port"],
+        limit=4 * 1024 * 1024,
+    )
     payload = {"token": endpoint["token"], **command}
     writer.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
     await writer.drain()
@@ -716,11 +925,15 @@ async def ensure_browser_daemon(args: argparse.Namespace) -> Path:
         str(args.artifact_root.resolve()),
         "--max-frames",
         str(args.max_frames),
+        "--max-notes",
+        str(args.max_notes),
         "--timeout-ms",
         str(args.timeout_ms),
     ]
     if args.endpoint_path is not None:
         command.extend(["--endpoint-path", str(path)])
+    if getattr(args, "keep_note_pages", False):
+        command.append("--keep-note-pages")
     if args.login_wait_seconds:
         command.extend(["--login-wait-seconds", str(args.login_wait_seconds)])
 
@@ -753,6 +966,43 @@ async def run_reused_browser(args: argparse.Namespace) -> int:
     if args.probe_selectors:
         response = await send_browser_command(path, {"action": "probe"})
         print(json.dumps(response.get("probe"), ensure_ascii=False, indent=2, default=str))
+        return 0
+    if args.open_search:
+        if not args.query:
+            raise ValueError("--open-search 必须同时提供 --query")
+        response = await send_browser_command(
+            path,
+            {"action": "search", "query": args.query},
+        )
+        print(json.dumps(response, ensure_ascii=False, indent=2))
+        return 0
+    if args.extract_filter_elements:
+        if not args.query:
+            raise ValueError("--extract-filter-elements 必须同时提供 --query")
+        response = await send_browser_command(
+            path,
+            {
+                "action": "extract_filter_elements",
+                "query": args.query,
+                "include_dom": args.include_filter_dom,
+            },
+        )
+        print(json.dumps(response, ensure_ascii=False, indent=2, default=str))
+        return 0
+    if args.filter_preview:
+        if not args.query:
+            raise ValueError("--filter-preview 必须同时提供 --query")
+        try:
+            filters = json.loads(args.filters_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("--filters-json 必须是合法 JSON 对象") from exc
+        if not isinstance(filters, dict):
+            raise ValueError("--filters-json 必须是 JSON 对象")
+        response = await send_browser_command(
+            path,
+            {"action": "filter_preview", "query": args.query, "filters": filters},
+        )
+        print(json.dumps(response, ensure_ascii=False, indent=2, default=str))
         return 0
     if not args.query:
         response = await send_browser_command(path, {"action": "status"})
@@ -789,6 +1039,31 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="本地可见运行 CloakBrowser 小红书网页适配器")
     parser.add_argument("--query", help="固定搜索关键词；不填写时只启动或查看浏览器")
     parser.add_argument(
+        "--open-search",
+        action="store_true",
+        help="仅打开关键词搜索结果页，不执行笔记采集",
+    )
+    parser.add_argument(
+        "--filter-preview",
+        action="store_true",
+        help="只执行四组筛选验收并返回筛选后卡片原始链接，不进入详情",
+    )
+    parser.add_argument(
+        "--extract-filter-elements",
+        action="store_true",
+        help="悬停筛选栏并提取五组全部可见 DOM，不点击选项、不采集笔记",
+    )
+    parser.add_argument(
+        "--include-filter-dom",
+        action="store_true",
+        help="与 --extract-filter-elements 配合，额外返回每个选项的完整 outerHTML",
+    )
+    parser.add_argument(
+        "--filters-json",
+        default="{}",
+        help='筛选设置 JSON，例如 {"note_type":"image_text"}',
+    )
+    parser.add_argument(
         "--probe-selectors",
         action="store_true",
         help="只读检查当前常驻浏览器中的可见选择器",
@@ -798,6 +1073,11 @@ def parse_args() -> argparse.Namespace:
         help="人工授权记录，例如 local-manual-test",
     )
     parser.add_argument("--login-wait-seconds", type=int, default=0)
+    parser.add_argument(
+        "--keep-note-pages",
+        action="store_true",
+        help="采集结束后保留每篇笔记的详情页，便于人工对照",
+    )
     parser.add_argument(
         "--stay-open-seconds",
         type=int,
@@ -820,6 +1100,12 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(reuse_browser=True)
     parser.add_argument("--close-browser", action="store_true", help="关闭当前常驻 CloakBrowser")
     parser.add_argument("--max-frames", type=int, default=30)
+    parser.add_argument(
+        "--max-notes",
+        type=int,
+        default=MAX_IMAGE_NOTES,
+        help="单次查询最多成功采集的非视频笔记数量",
+    )
     parser.add_argument("--timeout-ms", type=int, default=30_000)
     parser.add_argument("--selector-path", type=Path, default=DEFAULT_SELECTOR_PATH)
     parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
@@ -832,12 +1118,26 @@ def parse_args() -> argparse.Namespace:
         parser.error("等待时间不能小于 0")
     if not 1 <= args.max_frames <= 100:
         parser.error("--max-frames 必须在 1 到 100 之间")
+    if not 1 <= args.max_notes <= MAX_IMAGE_NOTES:
+        parser.error(f"--max-notes 必须在 1 到 {MAX_IMAGE_NOTES} 之间")
     if not 1_000 <= args.timeout_ms <= 300_000:
         parser.error("--timeout-ms 必须在 1000 到 300000 之间")
     if args.close_browser and not args.reuse_browser:
         parser.error("--close-browser 不能与 --no-reuse-browser 同时使用")
-    if args.browser_daemon and (args.close_browser or args.query):
+    if args.browser_daemon and (args.close_browser or args.query or args.open_search):
         parser.error("--browser-daemon 只能由脚本内部启动")
+    if args.open_search and not args.query:
+        parser.error("--open-search 必须同时提供 --query")
+    if args.filter_preview and not args.query:
+        parser.error("--filter-preview 必须同时提供 --query")
+    if args.filter_preview and not args.reuse_browser:
+        parser.error("--filter-preview 需要复用常驻 CloakBrowser")
+    if args.extract_filter_elements and not args.query:
+        parser.error("--extract-filter-elements 必须同时提供 --query")
+    if args.extract_filter_elements and not args.reuse_browser:
+        parser.error("--extract-filter-elements 需要复用常驻 CloakBrowser")
+    if args.include_filter_dom and not args.extract_filter_elements:
+        parser.error("--include-filter-dom 必须与 --extract-filter-elements 同时使用")
     return args
 
 

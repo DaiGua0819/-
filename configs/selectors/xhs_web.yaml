@@ -1,4 +1,4 @@
-version: 1.0.4
+version: 1.2.0
 source: xhs_web
 selectors:
   login_required:
@@ -9,14 +9,23 @@ selectors:
     required: false
     candidates:
       - css: "[data-xvi-authenticated='true']"
+      - css: "a[href*='/user/profile/']"
   search_input:
     candidates:
       - css: "#search-input"
       - css: "#search-input-in-feeds"
+  filter_button:
+    required: false
+    candidates:
+      - css: "div.filter"
+      - text_regex: "^筛选$|^已筛选$"
   result_card:
     candidates:
-      - css: "a[href*='/search_result/']"
+      - css: "section.note-item"
+      - css: "div.note-item"
       - css: "[data-xvi='result-card']"
+      - css: "a[href*='/explore/']"
+      - css: "a[href*='/search_result/']"
   note_author_link:
     required: false
     candidates:
@@ -35,6 +44,23 @@ selectors:
     candidates:
       - css: "[data-xvi='note-video']"
       - css: ".note-container video"
+  note_title:
+    required: false
+    candidates:
+      - css: "#detail-title"
+  note_body:
+    required: false
+    candidates:
+      - css: "#detail-desc > span.note-text > span:nth-of-type(1)"
+      - css: "#detail-desc > span.note-text"
+  note_tag:
+    required: false
+    candidates:
+      - css: "#detail-desc a#hash-tag"
+  note_edited_at:
+    required: false
+    candidates:
+      - text_regex: "编辑于"
   carousel_viewport:
     candidates:
       - css: "[data-xvi='carousel-viewport']"

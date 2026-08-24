@@ -96,6 +96,21 @@ def create_app(
             sort=sort,
         )
 
+    @app.get("/api/v1/library/capture-failures")
+    def capture_failures(
+        request: Request,
+        run_id: str | None = Query(default=None, max_length=120),
+        error_code: str | None = Query(default=None, max_length=120),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, object]:
+        return _repository(request).list_capture_failures(
+            run_id=run_id,
+            error_code=error_code,
+            limit=limit,
+            offset=offset,
+        )
+
     @app.get("/api/v1/library/notes/{note_key}")
     def library_note(request: Request, note_key: str) -> dict[str, object]:
         note = _repository(request).get_note(note_key)

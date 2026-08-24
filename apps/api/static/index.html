@@ -4,18 +4,37 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f2eb" />
-    <title>XVI · 线下活动素材库</title>
+    <title>RedBeauty · 美妆素材管理平台</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <link rel="stylesheet" href="/static/ux.css" />
+    <link rel="stylesheet" href="/static/redbeauty.css" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
     <div class="ambient ambient-two"></div>
+    <aside class="prototype-nav" aria-label="主导航">
+      <a class="prototype-brand" href="/" aria-label="RedBeauty 素材首页">
+        <span class="prototype-brand-mark">R</span>
+        <span class="prototype-brand-name">RedBeauty</span>
+      </a>
+      <nav class="prototype-nav-list" aria-label="素材平台导航">
+        <a class="prototype-nav-item active" href="/" aria-current="page"><span aria-hidden="true">⌂</span><b>主页</b></a>
+        <button class="prototype-nav-item" type="button" title="喜欢页面将在下一轮接入"><span aria-hidden="true">♡</span><b>喜欢</b></button>
+        <button class="prototype-nav-item" type="button" title="搜索页面将在下一轮接入"><span aria-hidden="true">⌕</span><b>搜索</b></button>
+        <button class="prototype-nav-item" type="button" title="标签管理将在下一轮接入"><span aria-hidden="true">＋</span><b>标签</b></button>
+      </nav>
+      <div class="prototype-user" title="当前用户"><span>W</span><b>王</b></div>
+    </aside>
     <header class="topbar">
       <a class="brand" href="/" aria-label="回到素材库首页">
         <span class="brand-mark">X</span>
         <span><b>XVI</b><small>Visual Intelligence</small></span>
       </a>
+      <div class="feed-tabs" aria-label="素材排序视图">
+        <button class="feed-tab active" type="button">全部</button>
+        <button class="feed-tab" type="button">趋势</button>
+        <button class="feed-tab" type="button">最近</button>
+      </div>
       <label class="search-box" for="search-input">
         <span aria-hidden="true">⌕</span>
         <input id="search-input" type="search" placeholder="搜索品牌、关键词或作者" autocomplete="off" />
@@ -60,11 +79,11 @@
       <section class="content">
         <section class="hero">
           <div>
-            <p class="eyebrow">INTERNAL VISUAL LIBRARY</p>
-            <h1>把每次活动现场，<em>变成可检索的灵感。</em></h1>
-            <p class="hero-copy">按笔记查看完整配图、快速复核，并从原始链接回到小红书内容。</p>
+            <p class="eyebrow">RED BEAUTY MATERIAL LIBRARY</p>
+            <h1>素材首页</h1>
+            <p class="hero-copy">集中浏览、筛选和复核每一篇已经入库的小红书美妆图文素材。</p>
           </div>
-          <button id="reindex-button" class="outline-button" title="只读取本地 Artifact，不访问小红书">↻ 同步本地素材</button>
+          <button id="reindex-button" class="outline-button" title="只读取本地 Artifact，不访问小红书">＋ 同步新素材</button>
         </section>
 
         <section id="summary" class="summary-grid" aria-label="素材库概览">

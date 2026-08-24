@@ -124,7 +124,7 @@ function setFilter(key, value) {
 }
 
 function renderCard(note) {
-  const tags = note.tags.slice(0, 3).map((tag) => `<span class="card-tag">${escapeHtml(tag)}</span>`).join("");
+  const tags = (note.tags || []).slice(0, 3).map((tag) => `<span class="card-tag">${escapeHtml(tag)}</span>`).join("");
   const image = note.preview_url
     ? `<img src="${escapeHtml(note.preview_url)}" loading="lazy" decoding="async" alt="${escapeHtml(note.search_keyword || "小红书素材")}" />`
     : `<div class="missing-cover" aria-hidden="true">XVI</div>`;
@@ -134,10 +134,12 @@ function renderCard(note) {
   const acceptedPercent = note.asset_count ? Math.round((note.accepted_count / note.asset_count) * 100) : 0;
   const delivery = note.delivery_status === "delivered" ? `<span class="delivery-marker">已推送</span>` : "";
   const metadata = [
-    `${note.asset_count} 张图片`,
+    note.asset_count + " 张图片",
     note.author_name,
-    note.last_captured_at ? `采集 ${formatDate(note.last_captured_at)}` : "",
-  ].filter(Boolean).map((item) => `<span>${escapeHtml(item)}</span>`).join("<i>·</i>");
+    note.author_id ? "作者ID " + note.author_id : "",
+    note.published_at ? "发布 " + note.published_at : "",
+    note.last_captured_at ? "采集 " + formatDate(note.last_captured_at) : "",
+  ].filter(Boolean).map((item) => "<span>" + escapeHtml(item) + "</span>").join("<i>·</i>");
   return `<button class="note-card" type="button" data-note-key="${escapeHtml(note.note_key)}" aria-label="查看笔记：${escapeHtml(title)}">
     <div class="cover-wrap">${image}<span class="status-badge ${note.eligibility}">${labels[note.eligibility] || "待复核"}</span>${delivery}</div>
     <div class="card-body">
@@ -308,6 +310,19 @@ function renderNoteDetail(note, scrollTop = 0) {
   const deliveryLabel = note.delivery_status === "delivered" ? "撤销已推送" : "标记为已推送";
   const reviewed = note.accepted_count + note.rejected_count;
   const ratio = note.qualifying_ratio == null ? "—" : `${Math.round(note.qualifying_ratio * 100)}%`;
+  const detailMeta = [
+    "平台笔记ID：" + (note.platform_note_id || "待补充"),
+    "作者ID：" + (note.author_id || "待补充"),
+    "发布时间：" + (note.published_at_raw || note.published_at || "待补充"),
+    note.edited_at_raw || "",
+  ].filter(Boolean).map((item) => "<span>" + escapeHtml(item) + "</span>").join("");
+  const detailBody = note.body_text ? '<p class="detail-body">' + escapeHtml(note.body_text) + "</p>" : "";
+  const detailTags = (note.tags || []).length
+    ? '<div class="detail-tags">' + note.tags.map((tag) => '<span class="card-tag">' + escapeHtml(tag) + "</span>").join("") + "</div>"
+    : "";
+  const detailCaptureError = note.capture_error_reason
+    ? '<p class="detail-error">采集记录：' + escapeHtml(note.capture_error_code || "capture_incomplete") + " · " + escapeHtml(note.capture_error_reason) + "</p>"
+    : "";
   $("#dialog-content").innerHTML = `<div class="detail-head">
     <div class="note-navigation"><button type="button" data-note-nav="previous" ${canPrevious ? "" : "disabled"}>← 上一篇</button><span>${index >= 0 ? `${index + 1} / ${total}` : "当前笔记"}</span><button type="button" data-note-nav="next" ${canNext ? "" : "disabled"}>下一篇 →</button></div>
     <p class="detail-kicker">${escapeHtml(note.search_keyword || "已入库素材")}</p>
@@ -315,6 +330,7 @@ function renderNoteDetail(note, scrollTop = 0) {
     <p class="detail-meta">${escapeHtml(note.author_name || "作者待补充")} · ${escapeHtml(note.published_at || "发布时间待补充")} · ${note.asset_count} 张图片</p>
   </div>
   <div class="detail-summary"><div><strong>${reviewed}/${note.asset_count}</strong><span>已复核</span></div><div><strong>${note.accepted_count}</strong><span>符合</span></div><div><strong>${note.rejected_count}</strong><span>不符合</span></div><div><strong>${ratio}</strong><span>符合率</span></div></div>
+  ${detailMeta}${detailBody}${detailTags}${detailCaptureError}
   <div class="detail-toolbar">
     <div class="detail-links">${source}<span class="detail-status ${note.eligibility}">${labels[note.eligibility]}</span></div>
     <div class="detail-actions"><button type="button" class="batch-button accepted" data-batch-review="accepted">全部标为符合</button><button type="button" class="batch-button rejected" data-batch-review="rejected">全部标为不符合</button><button type="button" id="delivery-button" class="primary-button ${note.delivery_status === "delivered" ? "secondary" : ""}" data-delivery-status="${note.delivery_status}">${deliveryLabel}</button></div>

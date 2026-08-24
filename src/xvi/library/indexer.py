@@ -78,6 +78,37 @@ class ArtifactIndexer:
         )
         report.run_count += 1
 
+        candidates = [item for item in _list(result.get("candidates")) if isinstance(item, dict)]
+        for index, candidate in enumerate(candidates):
+            platform_id = _text(candidate.get("platform_note_id")) or _platform_note_id(
+                _text(candidate.get("canonical_url")) or _text(candidate.get("normalized_url"))
+                or _text(candidate.get("source_url"))
+            )
+            rank = _number(candidate.get("result_rank")) or index + 1
+            observation_id = f"{run_id}:{platform_id or 'rank'}:{rank}"
+            self.repository.upsert_candidate(
+                {
+                    "observation_id": observation_id,
+                    "run_id": run_id,
+                    "platform_note_id": platform_id,
+                    "source_url": _text(candidate.get("source_url")),
+                    "canonical_url": _text(candidate.get("canonical_url"))
+                    or _canonical_url(platform_id),
+                    "query_text": _text(candidate.get("search_keyword")) or query_text,
+                    "author_id": _text(candidate.get("author_id")),
+                    "author_name": _text(candidate.get("author_name")),
+                    "published_at_raw": _text(candidate.get("visible_publish_hint")),
+                    "result_rank": rank,
+                    "status": "discovered",
+                }
+            )
+
+        self._index_failures(
+            run_id=run_id,
+            steps_path=result_path.with_name("steps.jsonl"),
+            artifact_path=str(result_path.parent),
+        )
+
         assets = [item for item in _list(result.get("assets")) if isinstance(item, dict)]
         if not assets:
             return
@@ -93,6 +124,10 @@ class ArtifactIndexer:
             fallback = legacy_notes[index] if index < len(legacy_notes) else {}
             source_url = _text(note.get("source_url")) or _text(fallback.get("source_url"))
             normalized_url = _text(note.get("normalized_url")) or source_url
+            platform_id = _text(note.get("platform_note_id")) or _platform_note_id(
+                _text(note.get("canonical_url")) or normalized_url or source_url
+            )
+            canonical_url = _text(note.get("canonical_url")) or _canonical_url(platform_id)
             note_key = _note_key(source_url, source_note_id)
             first_asset = note_assets[0]
             search_keyword = (
@@ -100,15 +135,19 @@ class ArtifactIndexer:
                 or _text(first_asset.get("search_keyword"))
                 or query_text
             )
+            captured_at = _text(manifest.get("started_at"))
             self.repository.upsert_note(
                 {
                     "note_key": note_key,
                     "source_note_id": source_note_id,
+                    "platform_note_id": platform_id,
                     "source_url": source_url,
+                    "canonical_url": canonical_url,
                     "normalized_url": normalized_url,
                     "title": _display_title(
                         _text(note.get("title")) or _text(fallback.get("title"))
                     ),
+                    "body_text": _text(note.get("body_text")),
                     "search_keyword": search_keyword,
                     "author_id": _text(note.get("author_id"))
                     or _text(first_asset.get("author_id")),
@@ -116,13 +155,31 @@ class ArtifactIndexer:
                     or _text(first_asset.get("author_name")),
                     "published_at": _text(note.get("published_at"))
                     or _text(first_asset.get("published_at")),
+                    "published_at_raw": _text(note.get("published_at_raw"))
+                    or _text(note.get("published_at")),
+                    "published_at_utc": _text(note.get("published_at_utc")),
+                    "edited_at_raw": _text(note.get("edited_at_raw")),
+                    "note_type": _text(note.get("note_type")) or "image",
                     "expected_image_count": _number(note.get("expected_image_count"))
                     or _number(fallback.get("expected_image_count")),
+                    "expected_media_count": _number(note.get("expected_image_count")),
+                    "captured_media_count": len(note_assets),
+                    "note_capture_status": "captured",
+                    "capture_error_code": None,
+                    "capture_error_reason": None,
                     "capture_complete": int(bool(result.get("capture_complete"))),
-                    "captured_at": _text(manifest.get("started_at")),
+                    "captured_at": captured_at,
+                    "first_seen_at": captured_at,
+                    "last_verified_at": captured_at,
                 }
             )
             self.repository.add_tags(note_key, _derive_tags(search_keyword), origin="capture_query")
+            native_tags = [
+                tag.strip()
+                for tag in (_list(note.get("native_tags")))
+                if isinstance(tag, str) and tag.strip()
+            ]
+            self.repository.add_tags(note_key, native_tags, origin="xhs_detail_dom")
             report.note_count += 1
             for asset in note_assets:
                 self.repository.upsert_asset(
@@ -142,6 +199,57 @@ class ArtifactIndexer:
                     }
                 )
                 report.asset_count += 1
+
+    def _index_failures(
+        self,
+        *,
+        run_id: str,
+        steps_path: Path,
+        artifact_path: str,
+    ) -> None:
+        if not steps_path.is_file():
+            return
+        try:
+            lines = steps_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            step = _text(event.get("step")) or "unknown"
+            status = _text(event.get("status"))
+            if status != "failed" and step != "skip_note":
+                continue
+            metadata = _mapping(event.get("metadata"))
+            error_code = _text(metadata.get("error_code")) or (
+                "VIDEO_PRESENT" if step == "skip_note" else "capture_incomplete"
+            )
+            self.repository.record_capture_failure(
+                {
+                    "run_id": run_id,
+                    "platform_note_id": _text(metadata.get("platform_note_id")),
+                    "stage": _text(metadata.get("stage")) or step,
+                    "error_code": error_code,
+                    "error_message": _text(metadata.get("error"))
+                    or _text(metadata.get("reason"))
+                    or f"{step} 未完成",
+                    "expected_value": _text(metadata.get("expected_value")),
+                    "actual_value": _text(metadata.get("actual_value")),
+                    "selector_key": _text(metadata.get("selector_key")),
+                    "page_url": _text(metadata.get("final_url"))
+                    or _text(metadata.get("current_url"))
+                    or _text(metadata.get("source_url")),
+                    "artifact_path": artifact_path,
+                    "retryable": int(
+                        bool(metadata.get("retryable", False if step == "skip_note" else True))
+                    ),
+                    "occurred_at": _text(event.get("timestamp")) or _utc_now(),
+                }
+            )
 
     def _import_legacy_gallery_reviews(self, report: IndexReport) -> int:
         imported = 0
@@ -218,6 +326,26 @@ def _note_key(source_url: str | None, source_note_id: str) -> str:
             identity = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
             return sha256(identity.encode("utf-8")).hexdigest()[:32]
     return f"capture-{source_note_id}"
+
+
+def _platform_note_id(url: str | None) -> str | None:
+    if not url:
+        return None
+    path = urlsplit(url).path.rstrip("/")
+    parts = [part for part in path.split("/") if part]
+    if len(parts) >= 2 and parts[-2] in {"explore", "search_result"}:
+        return parts[-1]
+    return None
+
+
+def _canonical_url(platform_id: str | None) -> str | None:
+    return f"https://www.xiaohongshu.com/explore/{platform_id}" if platform_id else None
+
+
+def _utc_now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat()
 
 
 def _derive_tags(search_keyword: str | None) -> list[str]:

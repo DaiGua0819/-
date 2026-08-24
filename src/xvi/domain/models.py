@@ -19,8 +19,12 @@ class SearchQuery(BaseModel):
 class SearchResult(BaseModel):
     source_url: str
     normalized_url: str
+    canonical_url: str | None = None
+    platform_note_id: str | None = None
     visible_title: str | None = None
     visible_publish_hint: str | None = None
+    author_id: str | None = None
+    author_name: str | None = None
     search_keyword: str | None = None
     result_rank: int
 
@@ -28,11 +32,19 @@ class SearchResult(BaseModel):
 class NoteSnapshot(BaseModel):
     note_id: UUID = Field(default_factory=uuid4)
     source_url: str
+    canonical_url: str | None = None
+    platform_note_id: str | None = None
     title: str | None = None
+    body_text: str | None = None
+    native_tags: list[str] = Field(default_factory=list)
     search_keyword: str | None = None
     author_id: str | None = None
     author_name: str | None = None
     published_at: str | None = None
+    published_at_raw: str | None = None
+    published_at_utc: str | None = None
+    edited_at_raw: str | None = None
+    note_type: str | None = None
     expected_image_count: int | None = None
 
 

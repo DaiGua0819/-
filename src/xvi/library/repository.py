@@ -61,17 +61,31 @@ class LibraryRepository:
                 CREATE TABLE IF NOT EXISTS notes (
                     note_key TEXT PRIMARY KEY,
                     source_note_id TEXT,
+                    platform_note_id TEXT,
                     source_url TEXT,
+                    canonical_url TEXT,
                     normalized_url TEXT,
                     title TEXT,
+                    body_text TEXT,
                     search_keyword TEXT,
                     author_id TEXT,
                     author_name TEXT,
                     published_at TEXT,
+                    published_at_raw TEXT,
+                    published_at_utc TEXT,
+                    edited_at_raw TEXT,
+                    note_type TEXT,
                     expected_image_count INTEGER,
+                    expected_media_count INTEGER,
+                    captured_media_count INTEGER,
+                    note_capture_status TEXT,
+                    capture_error_code TEXT,
+                    capture_error_reason TEXT,
                     capture_complete INTEGER NOT NULL DEFAULT 0,
                     first_captured_at TEXT,
                     last_captured_at TEXT,
+                    first_seen_at TEXT,
+                    last_verified_at TEXT,
                     delivery_status TEXT NOT NULL DEFAULT 'new'
                         CHECK(delivery_status IN ('new', 'delivered')),
                     delivered_at TEXT
@@ -79,7 +93,6 @@ class LibraryRepository:
 
                 CREATE INDEX IF NOT EXISTS idx_notes_delivery ON notes(delivery_status);
                 CREATE INDEX IF NOT EXISTS idx_notes_search_keyword ON notes(search_keyword);
-
                 CREATE TABLE IF NOT EXISTS assets (
                     asset_id TEXT PRIMARY KEY,
                     note_key TEXT NOT NULL REFERENCES notes(note_key) ON DELETE CASCADE,
@@ -127,8 +140,80 @@ class LibraryRepository:
                     source TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS candidate_observations (
+                    observation_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    platform_note_id TEXT,
+                    source_url TEXT,
+                    canonical_url TEXT,
+                    query_text TEXT,
+                    author_id TEXT,
+                    author_name TEXT,
+                    published_at_raw TEXT,
+                    result_rank INTEGER,
+                    status TEXT NOT NULL,
+                    reason_code TEXT,
+                    observed_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_candidate_platform_id
+                    ON candidate_observations(platform_note_id);
+                CREATE INDEX IF NOT EXISTS idx_candidate_run
+                    ON candidate_observations(run_id);
+
+                CREATE TABLE IF NOT EXISTS capture_failures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    platform_note_id TEXT,
+                    stage TEXT NOT NULL,
+                    error_code TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    expected_value TEXT,
+                    actual_value TEXT,
+                    selector_key TEXT,
+                    page_url TEXT,
+                    artifact_path TEXT,
+                    retryable INTEGER NOT NULL DEFAULT 1,
+                    occurred_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_capture_failures_run
+                    ON capture_failures(run_id);
+                CREATE INDEX IF NOT EXISTS idx_capture_failures_code
+                    ON capture_failures(error_code);
                 """
             )
+            self._ensure_schema_columns(connection)
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_platform_id ON notes(platform_note_id)"
+            )
+
+    @staticmethod
+    def _ensure_schema_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(notes)").fetchall()
+        }
+        definitions = {
+            "platform_note_id": "TEXT",
+            "canonical_url": "TEXT",
+            "body_text": "TEXT",
+            "published_at_raw": "TEXT",
+            "published_at_utc": "TEXT",
+            "edited_at_raw": "TEXT",
+            "note_type": "TEXT",
+            "expected_media_count": "INTEGER",
+            "captured_media_count": "INTEGER",
+            "note_capture_status": "TEXT",
+            "capture_error_code": "TEXT",
+            "capture_error_reason": "TEXT",
+            "first_seen_at": "TEXT",
+            "last_verified_at": "TEXT",
+        }
+        for name, definition in definitions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE notes ADD COLUMN {name} {definition}")
 
     def upsert_run(
         self,
@@ -170,37 +255,232 @@ class LibraryRepository:
             )
 
     def upsert_note(self, values: dict[str, Any]) -> None:
+        payload: dict[str, Any] = {
+            "note_key": None,
+            "source_note_id": None,
+            "platform_note_id": None,
+            "source_url": None,
+            "canonical_url": None,
+            "normalized_url": None,
+            "title": None,
+            "body_text": None,
+            "search_keyword": None,
+            "author_id": None,
+            "author_name": None,
+            "published_at": None,
+            "published_at_raw": None,
+            "published_at_utc": None,
+            "edited_at_raw": None,
+            "note_type": None,
+            "expected_image_count": None,
+            "expected_media_count": None,
+            "captured_media_count": None,
+            "note_capture_status": None,
+            "capture_error_code": None,
+            "capture_error_reason": None,
+            "capture_complete": 0,
+            "captured_at": None,
+            "first_seen_at": None,
+            "last_verified_at": None,
+        }
+        payload.update(values)
+        payload["captured_at"] = payload.get("captured_at") or _utc_now()
+        payload["first_seen_at"] = payload.get("first_seen_at") or payload["captured_at"]
+        payload["last_verified_at"] = payload.get("last_verified_at") or payload["captured_at"]
         with self.connection() as connection:
             connection.execute(
                 """
                 INSERT INTO notes(
-                    note_key, source_note_id, source_url, normalized_url, title,
-                    search_keyword, author_id, author_name, published_at,
-                    expected_image_count, capture_complete,
-                    first_captured_at, last_captured_at
+                    note_key, source_note_id, platform_note_id, source_url, canonical_url,
+                    normalized_url, title, body_text, search_keyword, author_id, author_name,
+                    published_at, published_at_raw, published_at_utc, edited_at_raw, note_type,
+                    expected_image_count, expected_media_count, captured_media_count,
+                    note_capture_status, capture_error_code, capture_error_reason,
+                    capture_complete, first_captured_at, last_captured_at, first_seen_at,
+                    last_verified_at
                 ) VALUES(
-                    :note_key, :source_note_id, :source_url, :normalized_url, :title,
-                    :search_keyword, :author_id, :author_name, :published_at,
-                    :expected_image_count, :capture_complete,
-                    :captured_at, :captured_at
+                    :note_key, :source_note_id, :platform_note_id, :source_url, :canonical_url,
+                    :normalized_url, :title, :body_text, :search_keyword, :author_id, :author_name,
+                    :published_at, :published_at_raw, :published_at_utc, :edited_at_raw, :note_type,
+                    :expected_image_count, :expected_media_count, :captured_media_count,
+                    :note_capture_status, :capture_error_code, :capture_error_reason,
+                    :capture_complete, :captured_at, :captured_at, :first_seen_at,
+                    :last_verified_at
                 )
                 ON CONFLICT(note_key) DO UPDATE SET
                     source_note_id=COALESCE(excluded.source_note_id, notes.source_note_id),
+                    platform_note_id=COALESCE(excluded.platform_note_id, notes.platform_note_id),
                     source_url=COALESCE(excluded.source_url, notes.source_url),
+                    canonical_url=COALESCE(excluded.canonical_url, notes.canonical_url),
                     normalized_url=COALESCE(excluded.normalized_url, notes.normalized_url),
                     title=COALESCE(excluded.title, notes.title),
+                    body_text=COALESCE(excluded.body_text, notes.body_text),
                     search_keyword=COALESCE(excluded.search_keyword, notes.search_keyword),
                     author_id=COALESCE(excluded.author_id, notes.author_id),
                     author_name=COALESCE(excluded.author_name, notes.author_name),
                     published_at=COALESCE(excluded.published_at, notes.published_at),
+                    published_at_raw=COALESCE(excluded.published_at_raw, notes.published_at_raw),
+                    published_at_utc=COALESCE(excluded.published_at_utc, notes.published_at_utc),
+                    edited_at_raw=COALESCE(excluded.edited_at_raw, notes.edited_at_raw),
+                    note_type=COALESCE(excluded.note_type, notes.note_type),
                     expected_image_count=COALESCE(
                         excluded.expected_image_count, notes.expected_image_count
                     ),
+                    expected_media_count=COALESCE(
+                        excluded.expected_media_count, notes.expected_media_count
+                    ),
+                    captured_media_count=COALESCE(
+                        excluded.captured_media_count, notes.captured_media_count
+                    ),
+                    note_capture_status=COALESCE(
+                        excluded.note_capture_status, notes.note_capture_status
+                    ),
+                    capture_error_code=COALESCE(
+                        excluded.capture_error_code, notes.capture_error_code
+                    ),
+                    capture_error_reason=COALESCE(
+                        excluded.capture_error_reason, notes.capture_error_reason
+                    ),
                     capture_complete=excluded.capture_complete,
-                    last_captured_at=excluded.last_captured_at
+                    last_captured_at=excluded.last_captured_at,
+                    last_verified_at=COALESCE(excluded.last_verified_at, notes.last_verified_at)
                 """,
-                values,
+                payload,
             )
+
+
+    def upsert_candidate(self, values: dict[str, Any]) -> None:
+        payload: dict[str, Any] = {
+            "observation_id": None,
+            "run_id": None,
+            "platform_note_id": None,
+            "source_url": None,
+            "canonical_url": None,
+            "query_text": None,
+            "author_id": None,
+            "author_name": None,
+            "published_at_raw": None,
+            "result_rank": None,
+            "status": "discovered",
+            "reason_code": None,
+            "observed_at": _utc_now(),
+        }
+        payload.update(values)
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO candidate_observations(
+                    observation_id, run_id, platform_note_id, source_url, canonical_url,
+                    query_text, author_id, author_name, published_at_raw, result_rank,
+                    status, reason_code, observed_at
+                ) VALUES(
+                    :observation_id, :run_id, :platform_note_id, :source_url, :canonical_url,
+                    :query_text, :author_id, :author_name, :published_at_raw, :result_rank,
+                    :status, :reason_code, :observed_at
+                )
+                ON CONFLICT(observation_id) DO UPDATE SET
+                    platform_note_id=excluded.platform_note_id,
+                    source_url=excluded.source_url,
+                    canonical_url=excluded.canonical_url,
+                    query_text=excluded.query_text,
+                    author_id=excluded.author_id,
+                    author_name=excluded.author_name,
+                    published_at_raw=excluded.published_at_raw,
+                    result_rank=excluded.result_rank,
+                    status=excluded.status,
+                    reason_code=excluded.reason_code,
+                    observed_at=excluded.observed_at
+                """,
+                payload,
+            )
+
+    def record_capture_failure(self, values: dict[str, Any]) -> None:
+        payload: dict[str, Any] = {
+            "run_id": None,
+            "platform_note_id": None,
+            "stage": "capture_note",
+            "error_code": "capture_incomplete",
+            "error_message": "未提供失败原因",
+            "expected_value": None,
+            "actual_value": None,
+            "selector_key": None,
+            "page_url": None,
+            "artifact_path": None,
+            "retryable": 1,
+            "occurred_at": _utc_now(),
+        }
+        payload.update(values)
+        with self.connection() as connection:
+            existing = connection.execute(
+                """
+                SELECT 1 FROM capture_failures
+                WHERE run_id=? AND COALESCE(platform_note_id, '')=COALESCE(?, '')
+                  AND stage=? AND error_code=? AND error_message=?
+                  AND COALESCE(page_url, '')=COALESCE(?, '')
+                  AND occurred_at=?
+                LIMIT 1
+                """,
+                (
+                    payload["run_id"],
+                    payload["platform_note_id"],
+                    payload["stage"],
+                    payload["error_code"],
+                    payload["error_message"],
+                    payload["page_url"],
+                    payload["occurred_at"],
+                ),
+            ).fetchone()
+            if existing is not None:
+                return
+            connection.execute(
+                """
+                INSERT INTO capture_failures(
+                    run_id, platform_note_id, stage, error_code, error_message,
+                    expected_value, actual_value, selector_key, page_url, artifact_path,
+                    retryable, occurred_at
+                ) VALUES(
+                    :run_id, :platform_note_id, :stage, :error_code, :error_message,
+                    :expected_value, :actual_value, :selector_key, :page_url, :artifact_path,
+                    :retryable, :occurred_at
+                )
+                """,
+                payload,
+            )
+
+    def list_capture_failures(
+        self,
+        *,
+        run_id: str | None,
+        error_code: str | None,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        where = ["1=1"]
+        params: list[Any] = []
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if error_code:
+            where.append("error_code=?")
+            params.append(error_code)
+        where_sql = " AND ".join(where)
+        with self.connection() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) AS total FROM capture_failures WHERE {where_sql}",
+                params,
+            ).fetchone()["total"]
+            rows = connection.execute(
+                f"""
+                SELECT id, run_id, platform_note_id, stage, error_code, error_message,
+                       expected_value, actual_value, selector_key, page_url, artifact_path,
+                       retryable, occurred_at
+                FROM capture_failures
+                WHERE {where_sql}
+                ORDER BY id DESC LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+        return {"total": int(total), "items": [dict(row) for row in rows]}
 
     def upsert_asset(self, values: dict[str, Any]) -> None:
         with self.connection() as connection:
@@ -428,9 +708,13 @@ class LibraryRepository:
     def _scored_notes_sql(self) -> str:
         return f"""
             SELECT
-                n.note_key, n.source_url, n.normalized_url, n.title, n.search_keyword,
-                n.author_id, n.author_name, n.published_at, n.expected_image_count,
-                n.capture_complete, n.first_captured_at, n.last_captured_at,
+                n.note_key, n.source_note_id, n.platform_note_id, n.source_url,
+                n.canonical_url, n.normalized_url, n.title, n.body_text, n.search_keyword,
+                n.author_id, n.author_name, n.published_at, n.published_at_raw,
+                n.published_at_utc, n.edited_at_raw, n.note_type, n.expected_image_count,
+                n.expected_media_count, n.captured_media_count, n.note_capture_status,
+                n.capture_error_code, n.capture_error_reason, n.capture_complete,
+                n.first_captured_at, n.last_captured_at, n.first_seen_at, n.last_verified_at,
                 n.delivery_status, n.delivered_at,
                 COUNT(a.asset_id) AS asset_count,
                 SUM(
@@ -509,12 +793,27 @@ class LibraryRepository:
         tags = [tag for tag in (row["tag_list"] or "").split(chr(31)) if tag]
         return {
             "note_key": row["note_key"],
+            "source_note_id": row["source_note_id"],
+            "platform_note_id": row["platform_note_id"],
             "source_url": row["source_url"],
+            "canonical_url": row["canonical_url"],
             "normalized_url": row["normalized_url"],
             "title": row["title"],
+            "body_text": row["body_text"],
             "search_keyword": row["search_keyword"],
+            "author_id": row["author_id"],
             "author_name": row["author_name"],
             "published_at": row["published_at"],
+            "published_at_raw": row["published_at_raw"],
+            "published_at_utc": row["published_at_utc"],
+            "edited_at_raw": row["edited_at_raw"],
+            "note_type": row["note_type"],
+            "expected_image_count": row["expected_image_count"],
+            "expected_media_count": row["expected_media_count"],
+            "captured_media_count": row["captured_media_count"],
+            "note_capture_status": row["note_capture_status"],
+            "capture_error_code": row["capture_error_code"],
+            "capture_error_reason": row["capture_error_reason"],
             "capture_complete": bool(row["capture_complete"]),
             "last_captured_at": row["last_captured_at"],
             "delivery_status": row["delivery_status"],
