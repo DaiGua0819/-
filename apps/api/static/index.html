@@ -18,8 +18,8 @@
         <span class="prototype-brand-name">RedBeauty</span>
       </a>
       <nav class="prototype-nav-list" aria-label="素材平台导航">
-        <a class="prototype-nav-item active" href="/" aria-current="page"><span aria-hidden="true">⌂</span><b>主页</b></a>
-        <button class="prototype-nav-item" type="button" title="喜欢页面将在下一轮接入"><span aria-hidden="true">♡</span><b>喜欢</b></button>
+        <a id="home-nav" class="prototype-nav-item active" href="/" aria-current="page"><span aria-hidden="true">⌂</span><b>主页</b></a>
+        <button id="favorites-nav" class="prototype-nav-item" type="button" title="查看我喜欢的素材"><span aria-hidden="true">♡</span><b>喜欢</b></button>
         <button class="prototype-nav-item" type="button" title="搜索页面将在下一轮接入"><span aria-hidden="true">⌕</span><b>搜索</b></button>
         <button class="prototype-nav-item" type="button" title="标签管理将在下一轮接入"><span aria-hidden="true">＋</span><b>标签</b></button>
       </nav>
@@ -40,9 +40,6 @@
         <input id="search-input" type="search" placeholder="搜索品牌、关键词或作者" autocomplete="off" />
         <kbd>⌘ K</kbd>
       </label>
-      <button id="mobile-filter-button" class="mobile-filter-button" type="button" aria-controls="filter-sidebar" aria-expanded="false">
-        <span aria-hidden="true">☷</span><span>筛选</span><b id="mobile-filter-count" hidden>0</b>
-      </button>
       <div class="topbar-meta"><span class="live-dot"></span> 本地素材库</div>
     </header>
 
@@ -77,30 +74,17 @@
       <button id="filter-backdrop" class="filter-backdrop" type="button" aria-label="关闭筛选" hidden></button>
 
       <section class="content">
-        <section class="hero">
-          <div>
-            <p class="eyebrow">RED BEAUTY MATERIAL LIBRARY</p>
-            <h1>素材首页</h1>
-            <p class="hero-copy">集中浏览、筛选和复核每一篇已经入库的小红书美妆图文素材。</p>
-          </div>
-          <button id="reindex-button" class="outline-button" title="只读取本地 Artifact，不访问小红书">＋ 同步新素材</button>
-        </section>
-
-        <section id="summary" class="summary-grid" aria-label="素材库概览">
-          <article class="summary-card skeleton"></article><article class="summary-card skeleton"></article>
-          <article class="summary-card skeleton"></article><article class="summary-card skeleton"></article>
-        </section>
-
         <div id="active-filters" class="active-filters" aria-live="polite"></div>
-        <div class="result-toolbar">
-          <div><p id="result-count">正在读取素材…</p><p class="threshold-note">全部图片完成判定且 ≥60% 符合，才满足推送阈值。</p></div>
-          <label class="sort-control" for="sort-select"><span>排序</span><select id="sort-select"><option value="recent">最近采集</option><option value="oldest">最早采集</option><option value="most_images">图片最多</option><option value="review_priority">优先待复核</option></select></label>
-        </div>
+        <!-- mobile-filter-button / sort-select controls removed from the current interface. -->
         <section id="masonry" class="masonry" aria-live="polite"></section>
         <div id="empty-state" class="empty-state" hidden>
           <span>◇</span><h2>没有匹配的笔记</h2><p>试试清除筛选或改用更短的关键词。</p>
         </div>
-        <div class="load-more-wrap"><button id="load-more" class="outline-button" hidden>加载更多</button><span id="load-sentinel" aria-hidden="true"></span></div>
+        <nav id="pagination" class="pagination" aria-label="素材分页" hidden>
+          <button id="page-previous" class="pagination-arrow" type="button" data-page="1">上一页</button>
+          <div id="page-numbers" class="page-numbers" aria-live="polite"></div>
+          <button id="page-next" class="pagination-arrow" type="button" data-page="1">下一页</button>
+        </nav>
       </section>
     </main>
 

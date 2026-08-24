@@ -1,12 +1,34 @@
 const allowedStatuses = new Set(["", "eligible", "needs_review", "below_threshold"]);
 const allowedSorts = new Set(["recent", "oldest", "most_images", "review_priority"]);
+const FAVORITES_STORAGE_KEY = "xhs-material-favorites";
+
+function loadFavoriteKeys() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(FAVORITES_STORAGE_KEY) || "[]");
+    return new Set(Array.isArray(value) ? value.filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistFavoriteKeys() {
+  try {
+    window.localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...state.favoriteKeys]));
+  } catch {
+    // 收藏功能在禁用 localStorage 的浏览器中仍可临时使用。
+  }
+}
+
 const initialParams = new URLSearchParams(window.location.search);
+const initialPage = Math.max(1, Number.parseInt(initialParams.get("page") || "1", 10) || 1);
 const state = {
   q: initialParams.get("q") || "",
   tag: initialParams.get("tag") || "",
   status: allowedStatuses.has(initialParams.get("status") || "") ? initialParams.get("status") || "" : "",
   onlyNew: initialParams.get("new") === "1",
   sort: allowedSorts.has(initialParams.get("sort") || "") ? initialParams.get("sort") || "recent" : "recent",
+  page: initialPage,
+  totalPages: 0,
   offset: 0,
   total: 0,
   loading: false,
@@ -14,12 +36,15 @@ const state = {
   tags: [],
   tagQuery: "",
   tagsExpanded: false,
+  favoritesOnly: initialParams.get("view") === "favorites",
+  favoriteKeys: loadFavoriteKeys(),
   currentNoteKey: initialParams.get("note") || "",
   currentNote: null,
+  detailImageIndex: 0,
   viewerIndex: 0,
 };
 
-const limit = 24;
+const pageSize = 25;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const masonry = $("#masonry");
@@ -29,8 +54,12 @@ let notesRequestId = 0;
 let searchTimer;
 let toastTimer;
 let toastCallback;
+let dialogAnimationTimer;
+let activeNoteOrigin = null;
+let noteCloseInProgress = false;
 const reasonSaveTimers = new Map();
 const reasonSaveOperations = new Set();
+const savedReasonSelector = "[data-saved-reason]";
 
 const labels = {
   eligible: "满足推送阈值",
@@ -39,6 +68,7 @@ const labels = {
   accepted: "符合",
   rejected: "不符合",
 };
+
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -76,6 +106,8 @@ function syncUrl(noteKey = state.currentNoteKey) {
   if (state.status) params.set("status", state.status);
   if (state.onlyNew) params.set("new", "1");
   if (state.sort !== "recent") params.set("sort", state.sort);
+  if (state.favoritesOnly) params.set("view", "favorites");
+  if (state.page > 1) params.set("page", String(state.page));
   if (noteKey) params.set("note", noteKey);
   const query = params.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
@@ -92,35 +124,74 @@ function showToast(message, action = null) {
   toastTimer = setTimeout(() => $("#toast").classList.remove("show"), action ? 6000 : 2800);
 }
 
-function activeFilterCount() {
-  return [state.q, state.tag, state.status, state.onlyNew].filter(Boolean).length;
-}
-
 function renderFilterState() {
   $("#search-input").value = state.q;
   $("#only-new").checked = state.onlyNew;
-  $("#sort-select").value = state.sort;
   $$(".filter-button").forEach((button) => button.classList.toggle("active", button.dataset.status === state.status));
+  const homeNav = $("#home-nav");
+  const favoritesNav = $("#favorites-nav");
+  homeNav?.classList.toggle("active", !state.favoritesOnly);
+  favoritesNav?.classList.toggle("active", state.favoritesOnly);
+  if (homeNav) {
+    if (state.favoritesOnly) homeNav.removeAttribute("aria-current");
+    else homeNav.setAttribute("aria-current", "page");
+  }
+  if (favoritesNav) favoritesNav.setAttribute("aria-pressed", String(state.favoritesOnly));
   const chips = [];
   if (state.q) chips.push(["q", `搜索：${state.q}`]);
   if (state.tag) chips.push(["tag", `标签：${state.tag}`]);
   if (state.status) chips.push(["status", labels[state.status]]);
   if (state.onlyNew) chips.push(["onlyNew", "仅看未推送"]);
+  if (state.favoritesOnly) chips.push(["favoritesOnly", "我的喜欢"]);
   $("#active-filters").innerHTML = chips.map(([key, label]) =>
     `<button type="button" class="filter-chip" data-clear-filter="${key}">${escapeHtml(label)} <span aria-hidden="true">×</span></button>`
   ).join("");
-  const count = activeFilterCount();
-  const badge = $("#mobile-filter-count");
-  badge.textContent = String(count);
-  badge.hidden = count === 0;
 }
 
 function setFilter(key, value) {
   state[key] = value;
+  state.page = 1;
   renderFilterState();
   renderTags();
   syncUrl();
-  loadNotes();
+  loadNotes({ page: 1 });
+}
+
+function isFavorite(noteKey) {
+  return Boolean(noteKey) && state.favoriteKeys.has(noteKey);
+}
+
+function setFavoritesView(enabled) {
+  state.favoritesOnly = enabled;
+  state.page = 1;
+  if (enabled) {
+    state.q = "";
+    state.tag = "";
+    state.status = "";
+    state.onlyNew = false;
+    state.tagQuery = "";
+    state.tagsExpanded = false;
+    $("#tag-search-input").value = "";
+    if (dialog.open) closeNote();
+  }
+  renderFilterState();
+  renderTags();
+  syncUrl("");
+  loadNotes({ page: 1 });
+}
+
+function toggleFavorite(noteKey) {
+  if (!noteKey) return;
+  const added = !state.favoriteKeys.has(noteKey);
+  if (added) state.favoriteKeys.add(noteKey);
+  else state.favoriteKeys.delete(noteKey);
+  persistFavoriteKeys();
+  renderFilterState();
+  if (state.currentNoteKey === noteKey && state.currentNote) {
+    renderNoteDetail(state.currentNote, $("#dialog-content").scrollTop);
+  }
+  if (state.favoritesOnly) loadNotes({ page: state.page });
+  showToast(added ? "已加入我的喜欢" : "已移出我的喜欢");
 }
 
 function renderCard(note) {
@@ -134,17 +205,18 @@ function renderCard(note) {
   const acceptedPercent = note.asset_count ? Math.round((note.accepted_count / note.asset_count) * 100) : 0;
   const delivery = note.delivery_status === "delivered" ? `<span class="delivery-marker">已推送</span>` : "";
   const metadata = [
-    note.asset_count + " 张图片",
-    note.author_name,
-    note.author_id ? "作者ID " + note.author_id : "",
+    note.asset_count ? note.asset_count + " 张图片" : "",
+    note.author_name || "",
+  ].filter(Boolean).map((item) => "<span>" + escapeHtml(item) + "</span>").join("<i>·</i>");
+  const dates = [
     note.published_at ? "发布 " + note.published_at : "",
     note.last_captured_at ? "采集 " + formatDate(note.last_captured_at) : "",
   ].filter(Boolean).map((item) => "<span>" + escapeHtml(item) + "</span>").join("<i>·</i>");
   return `<button class="note-card" type="button" data-note-key="${escapeHtml(note.note_key)}" aria-label="查看笔记：${escapeHtml(title)}">
     <div class="cover-wrap">${image}<span class="status-badge ${note.eligibility}">${labels[note.eligibility] || "待复核"}</span>${delivery}</div>
     <div class="card-body">
-      <p class="card-title">${escapeHtml(title)}</p>
       <div class="card-meta">${metadata}</div>
+      <div class="card-date">${dates}</div>
       <div class="review-progress" title="已复核 ${reviewed}/${note.asset_count} 张"><span style="width:${reviewedPercent}%"><i style="width:${reviewedPercent ? Math.min(100, Math.round((acceptedPercent / reviewedPercent) * 100)) : 0}%"></i></span></div>
       <div class="card-review-summary"><span>${note.accepted_count} 符合</span><span>${note.rejected_count} 不符合</span><span>${note.needs_review_count} 待定</span></div>
       <div class="card-tags">${tags}</div>
@@ -154,25 +226,6 @@ function renderCard(note) {
 
 function skeletonCards() {
   return Array.from({ length: 8 }, (_, index) => `<article class="note-card card-skeleton" aria-hidden="true"><div class="skeleton-cover" style="height:${220 + (index % 3) * 45}px"></div><div class="skeleton-lines"><i></i><i></i><i></i></div></article>`).join("");
-}
-
-function renderSummary(summary) {
-  const items = [
-    [summary.note_count, "已入库笔记", "", ""],
-    [summary.asset_count, "可浏览图片", "", ""],
-    [summary.eligible_count, "满足推送阈值", "accent", "eligible"],
-    [summary.needs_review_count, "待复核笔记", "", "needs_review"],
-    [summary.new_count, "尚未推送", "", "new"],
-  ];
-  $("#summary").innerHTML = items.map(([number, label, css, filter]) => {
-    const tag = filter ? "button" : "article";
-    const attributes = filter ? `type="button" data-summary-filter="${filter}"` : "";
-    return `<${tag} ${attributes} class="summary-card ${css}"><span class="number">${number}</span><span class="label">${label}</span>${filter ? '<span class="summary-arrow">查看 →</span>' : ""}</${tag}>`;
-  }).join("");
-}
-
-async function loadSummary() {
-  renderSummary(await api("/api/v1/library/summary"));
 }
 
 function renderTags() {
@@ -195,9 +248,11 @@ async function loadTags() {
 }
 
 function notesParams() {
+  const requestLimit = state.favoritesOnly ? 200 : pageSize;
+  const requestOffset = state.favoritesOnly ? 0 : (state.page - 1) * pageSize;
   const params = new URLSearchParams({
-    limit: String(limit),
-    offset: String(state.offset),
+    limit: String(requestLimit),
+    offset: String(requestOffset),
     sort: state.sort,
   });
   if (state.q) params.set("q", state.q);
@@ -207,53 +262,88 @@ function notesParams() {
   return params;
 }
 
-async function loadNotes({ append = false } = {}) {
-  if (append && state.loading) return;
-  if (!append) {
-    notesController?.abort();
-    notesController = new AbortController();
-    state.offset = 0;
+function renderPagination() {
+  const pagination = $("#pagination");
+  const pageNumbers = $("#page-numbers");
+  const previous = $("#page-previous");
+  const next = $("#page-next");
+  if (!pagination || !pageNumbers || !previous || !next) return;
+  const totalPages = state.totalPages;
+  if (totalPages <= 1) {
+    pagination.hidden = true;
+    pageNumbers.innerHTML = "";
+    return;
   }
+  pagination.hidden = false;
+  previous.disabled = state.page <= 1;
+  previous.dataset.page = String(Math.max(1, state.page - 1));
+  next.disabled = state.page >= totalPages;
+  next.dataset.page = String(Math.min(totalPages, state.page + 1));
+  const maxButtons = 7;
+  const endPage = Math.min(totalPages, Math.max(state.page + 3, maxButtons));
+  const startPage = Math.max(1, Math.min(state.page - 3, endPage - maxButtons + 1));
+  pageNumbers.innerHTML = Array.from({ length: endPage - startPage + 1 }, (_, index) => {
+    const page = startPage + index;
+    const active = page === state.page;
+    return '<button type="button" class="pagination-number' + (active ? ' active' : '') + '" data-page="' + page + '" aria-label="第 ' + page + ' 页"' + (active ? ' aria-current="page"' : '') + '>' + page + '</button>';
+  }).join("");
+}
+
+async function loadNotes({ page = state.page } = {}) {
+  notesController?.abort();
+  notesController = new AbortController();
+  state.page = Math.max(1, Number(page) || 1);
   const requestId = ++notesRequestId;
   state.loading = true;
   masonry.setAttribute("aria-busy", "true");
-  if (!append) {
-    if (!state.notes.length) masonry.innerHTML = skeletonCards();
-    else masonry.classList.add("is-refreshing");
-  }
-  $("#load-more").disabled = true;
+  if (!state.notes.length) masonry.innerHTML = skeletonCards();
+  else masonry.classList.add("is-refreshing");
   try {
-    const payload = await api(`/api/v1/library/notes?${notesParams()}`, { signal: notesController?.signal });
+    const payload = await api("/api/v1/library/notes?" + notesParams(), { signal: notesController?.signal });
     if (requestId !== notesRequestId) return;
-    state.total = payload.total;
-    state.notes = append ? [...state.notes, ...payload.items] : payload.items;
-    const markup = payload.items.map(renderCard).join("");
-    if (append) masonry.insertAdjacentHTML("beforeend", markup);
-    else masonry.innerHTML = markup;
-    state.offset += payload.items.length;
-    $("#result-count").textContent = payload.total
-      ? `共 ${payload.total} 篇笔记 · 已展示 ${state.offset} 篇`
-      : "没有找到匹配笔记";
-    $("#empty-state").hidden = payload.total !== 0;
-    $("#load-more").hidden = state.offset >= payload.total;
+    const fetchedItems = payload.items || [];
+    const favoriteItems = state.favoritesOnly
+      ? fetchedItems.filter((note) => isFavorite(note.note_key))
+      : fetchedItems;
+    state.total = state.favoritesOnly ? favoriteItems.length : Number(payload.total || fetchedItems.length);
+    state.totalPages = state.total ? Math.ceil(state.total / pageSize) : 0;
+    if (state.totalPages && state.page > state.totalPages) {
+      state.page = state.totalPages;
+      syncUrl();
+      return loadNotes({ page: state.page });
+    }
+    const start = (state.page - 1) * pageSize;
+    const visibleItems = state.favoritesOnly ? favoriteItems.slice(start, start + pageSize) : fetchedItems;
+    state.notes = visibleItems;
+    state.offset = start + visibleItems.length;
+    masonry.innerHTML = visibleItems.map(renderCard).join("");
+    const emptyTitle = $("#empty-state h2");
+    const emptyCopy = $("#empty-state p");
+    if (state.favoritesOnly) {
+      emptyTitle.textContent = "还没有喜欢的素材";
+      emptyCopy.textContent = "在笔记详情中点击喜欢，素材会出现在这里。";
+    } else {
+      emptyTitle.textContent = "没有匹配的笔记";
+      emptyCopy.textContent = "试试清除筛选或改用更短的关键词。";
+    }
+    $("#empty-state").hidden = state.total !== 0;
+    renderPagination();
   } catch (error) {
     if (error.name !== "AbortError") {
       showToast(error.message);
-      if (!append) masonry.innerHTML = `<div class="load-error"><strong>素材加载失败</strong><span>${escapeHtml(error.message)}</span><button type="button" data-retry>重新加载</button></div>`;
+      masonry.innerHTML = '<div class="load-error"><strong>素材加载失败</strong><span>' + escapeHtml(error.message) + '</span><button type="button" data-retry>重新加载</button></div>';
     }
   } finally {
     if (requestId === notesRequestId) {
       state.loading = false;
       masonry.classList.remove("is-refreshing");
       masonry.setAttribute("aria-busy", "false");
-      $("#load-more").disabled = false;
     }
   }
 }
-
 async function refreshLibrary() {
   renderFilterState();
-  const results = await Promise.allSettled([loadSummary(), loadTags(), loadNotes()]);
+  const results = await Promise.allSettled([loadTags(), loadNotes()]);
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") {
     showToast(failure.reason?.message || "部分数据加载失败，请稍后重试");
@@ -281,89 +371,181 @@ function reviewEvidence(asset) {
 function currentNotePosition() {
   const index = state.notes.findIndex((note) => note.note_key === state.currentNoteKey);
   const loaded = state.notes.length;
-  return { index, loaded, total: state.total || loaded };
+  const globalIndex = index >= 0 ? (state.page - 1) * pageSize + index : -1;
+  return { index, globalIndex, loaded, total: state.total || loaded };
+}
+
+function renderCarouselMedia(note) {
+  const assets = note.assets || [];
+  if (!assets.length) {
+    return '<section id="detail-media" class="detail-media-column"><div class="detail-media-empty"><strong>暂无可展示图片</strong><span>这篇笔记没有成功恢复图片素材。</span></div></section>';
+  }
+  const currentIndex = Math.min(Math.max(Number(state.detailImageIndex) || 0, 0), assets.length - 1);
+  state.detailImageIndex = currentIndex;
+  const asset = assets[currentIndex];
+  const dots = assets.map((item, index) => '<button type="button" class="detail-dot ' + (index === currentIndex ? "active" : "") + '" data-carousel-index="' + index + '" aria-label="切换到第 ' + (index + 1) + ' 张图片" aria-current="' + (index === currentIndex ? "true" : "false") + '"></button>').join("");
+  return '<section id="detail-media" class="detail-media-column">' +
+    '<div class="detail-media-stage">' +
+      '<img class="detail-media-backdrop" src="' + escapeHtml(asset.media_url) + '" aria-hidden="true" alt="" decoding="async" />' +
+      '<button type="button" class="detail-carousel-nav previous" data-carousel-nav="-1" aria-label="上一张图片" ' + (currentIndex === 0 ? "disabled" : "") + '>‹</button>' +
+      '<button type="button" class="detail-hero-button" data-image-index="' + currentIndex + '" aria-label="查看第 ' + (currentIndex + 1) + ' 张图片大图"><img src="' + escapeHtml(asset.media_url) + '" decoding="async" alt="笔记图片 ' + (asset.source_index || currentIndex + 1) + '" /><span class="detail-hero-count">' + (currentIndex + 1) + ' / ' + assets.length + '</span></button>' +
+      '<button type="button" class="detail-carousel-nav next" data-carousel-nav="1" aria-label="下一张图片" ' + (currentIndex === assets.length - 1 ? "disabled" : "") + '>›</button>' +
+    '</div>' +
+    '<div class="detail-thumbs" aria-label="图片导航"><div class="detail-dot-row" aria-label="图片位置">' + dots + '</div></div>' +
+  '</section>';
 }
 
 function renderNoteDetail(note, scrollTop = 0) {
+  const assets = note.assets || [];
   const source = note.source_url
-    ? `<a class="external-link" href="${escapeHtml(note.source_url)}" target="_blank" rel="noreferrer">查看小红书原笔记 ↗</a><button type="button" class="copy-link-button" data-copy-link>复制链接</button>`
-    : `<span class="detail-status">历史产物暂未恢复原链接</span>`;
-  const images = note.assets.map((asset, index) => {
-    const reasonId = `review-reason-${asset.asset_id}`;
-    const humanReason = asset.human_review_reason || "";
-    return `<article class="image-review-card ${asset.effective_review_status}">
-      <button type="button" class="image-open-button" data-image-index="${index}" aria-label="放大查看第 ${asset.source_index + 1} 张图片">
-        <img src="${escapeHtml(asset.media_url)}" loading="lazy" decoding="async" alt="笔记图片 ${asset.source_index + 1}" />
-        <span class="zoom-hint">放大查看</span>
-      </button>
-      <footer class="image-review-footer">
-        <span class="image-number">#${asset.source_index + 1}</span>
-        ${reviewEvidence(asset)}
-        <div class="review-choices" role="group" aria-label="图片 ${asset.source_index + 1} 复核结果">${reviewButtons(asset)}</div>
-        <div class="review-note"><label for="${escapeHtml(reasonId)}">人工备注 <span data-reason-status>${humanReason ? "已保存" : ""}</span></label><div><input id="${escapeHtml(reasonId)}" data-review-reason data-asset-id="${escapeHtml(asset.asset_id)}" data-saved-reason="${escapeHtml(humanReason)}" value="${escapeHtml(humanReason)}" maxlength="500" placeholder="补充符合或不符合的原因" /><button type="button" data-save-reason data-asset-id="${escapeHtml(asset.asset_id)}">保存</button></div></div>
-      </footer>
-    </article>`;
-  }).join("");
-  const { index, loaded, total } = currentNotePosition();
-  const canPrevious = index > 0;
-  const canNext = index >= 0 && (index < loaded - 1 || loaded < total);
-  const deliveryLabel = note.delivery_status === "delivered" ? "撤销已推送" : "标记为已推送";
-  const reviewed = note.accepted_count + note.rejected_count;
-  const ratio = note.qualifying_ratio == null ? "—" : `${Math.round(note.qualifying_ratio * 100)}%`;
-  const detailMeta = [
-    "平台笔记ID：" + (note.platform_note_id || "待补充"),
-    "作者ID：" + (note.author_id || "待补充"),
-    "发布时间：" + (note.published_at_raw || note.published_at || "待补充"),
-    note.edited_at_raw || "",
-  ].filter(Boolean).map((item) => "<span>" + escapeHtml(item) + "</span>").join("");
-  const detailBody = note.body_text ? '<p class="detail-body">' + escapeHtml(note.body_text) + "</p>" : "";
+    ? '<a class="external-link" href="' + escapeHtml(note.source_url) + '" target="_blank" rel="noreferrer">查看小红书原笔记 ↗</a><button type="button" class="copy-link-button" data-copy-link>复制链接</button>'
+    : '<span class="detail-status">历史产物暂未恢复原链接</span>';
+  const { index, globalIndex, total } = currentNotePosition();
+  const canPrevious = index > 0 || globalIndex > 0;
+  const canNext = globalIndex >= 0 && globalIndex < total - 1;
+  const ratio = note.qualifying_ratio == null ? "—" : Math.round(note.qualifying_ratio * 100) + "%";
+  const authorName = note.author_name || "作者待补充";
+  const favorite = isFavorite(note.note_key);
+  const detailQueryTags = String(note.search_keyword || "已入库素材")
+    .split(/[\s,，|\/]+/)
+    .filter(Boolean)
+    .map((tag) => '<span class="detail-query-pill">' + escapeHtml(tag) + '</span>')
+    .join("");
+  const detailFacts = [
+    note.published_at_raw || note.published_at ? '<span class="detail-published-date">发布 ' + escapeHtml(note.published_at_raw || note.published_at) + '</span>' : "",
+    note.edited_at_raw ? '<span>编辑 ' + escapeHtml(note.edited_at_raw) + '</span>' : "",
+    note.platform_note_id ? '<span>笔记ID ' + escapeHtml(note.platform_note_id) + '</span>' : "",
+  ].filter(Boolean).join("");
+  const detailBody = note.body_text
+    ? '<div class="detail-body">' + escapeHtml(note.body_text) + '</div>'
+    : '<p class="detail-empty-copy">暂无正文内容。</p>';
   const detailTags = (note.tags || []).length
-    ? '<div class="detail-tags">' + note.tags.map((tag) => '<span class="card-tag">' + escapeHtml(tag) + "</span>").join("") + "</div>"
-    : "";
+    ? '<div class="detail-tags">' + note.tags.map((tag) => '<span class="card-tag">' + escapeHtml(tag) + '</span>').join("") + '</div>'
+    : '<p class="detail-empty-copy">暂无标签。</p>';
   const detailCaptureError = note.capture_error_reason
-    ? '<p class="detail-error">采集记录：' + escapeHtml(note.capture_error_code || "capture_incomplete") + " · " + escapeHtml(note.capture_error_reason) + "</p>"
+    ? '<p class="detail-error">采集记录：' + escapeHtml(note.capture_error_code || "capture_incomplete") + " · " + escapeHtml(note.capture_error_reason) + '</p>'
     : "";
-  $("#dialog-content").innerHTML = `<div class="detail-head">
-    <div class="note-navigation"><button type="button" data-note-nav="previous" ${canPrevious ? "" : "disabled"}>← 上一篇</button><span>${index >= 0 ? `${index + 1} / ${total}` : "当前笔记"}</span><button type="button" data-note-nav="next" ${canNext ? "" : "disabled"}>下一篇 →</button></div>
-    <p class="detail-kicker">${escapeHtml(note.search_keyword || "已入库素材")}</p>
-    <h2 class="detail-title">${escapeHtml(note.title || "未提取标题的笔记")}</h2>
-    <p class="detail-meta">${escapeHtml(note.author_name || "作者待补充")} · ${escapeHtml(note.published_at || "发布时间待补充")} · ${note.asset_count} 张图片</p>
-  </div>
-  <div class="detail-summary"><div><strong>${reviewed}/${note.asset_count}</strong><span>已复核</span></div><div><strong>${note.accepted_count}</strong><span>符合</span></div><div><strong>${note.rejected_count}</strong><span>不符合</span></div><div><strong>${ratio}</strong><span>符合率</span></div></div>
-  ${detailMeta}${detailBody}${detailTags}${detailCaptureError}
-  <div class="detail-toolbar">
-    <div class="detail-links">${source}<span class="detail-status ${note.eligibility}">${labels[note.eligibility]}</span></div>
-    <div class="detail-actions"><button type="button" class="batch-button accepted" data-batch-review="accepted">全部标为符合</button><button type="button" class="batch-button rejected" data-batch-review="rejected">全部标为不符合</button><button type="button" id="delivery-button" class="primary-button ${note.delivery_status === "delivered" ? "secondary" : ""}" data-delivery-status="${note.delivery_status}">${deliveryLabel}</button></div>
-  </div>
-  <p class="review-hint">点击图片可放大；每张图片可直接选择“符合 / 不符合 / 待定”。批量操作会要求确认并可撤销。</p>
-  <section class="image-review-grid">${images}</section>`;
+  const detailLinks = '<div class="detail-links">' + source + '</div>';
+  const favoriteButton = '<button type="button" class="favorite-button ' + (favorite ? "active" : "") + '" data-favorite-note="' + escapeHtml(note.note_key) + '" aria-pressed="' + String(favorite) + '"><span aria-hidden="true">' + (favorite ? "♥" : "♡") + '</span><span>' + (favorite ? "已喜欢" : "喜欢") + '</span></button>';
+  const media = renderCarouselMedia(note);
+  $("#dialog-content").innerHTML =
+    '<div class="detail-head">' +
+      '<div class="note-navigation"><button type="button" data-note-nav="previous" ' + (canPrevious ? "" : "disabled") + '>← 上一篇</button><span>' + (globalIndex >= 0 ? (globalIndex + 1) + " / " + total : "当前笔记") + '</span><button type="button" data-note-nav="next" ' + (canNext ? "" : "disabled") + '>下一篇 →</button></div>' +
+    '</div>' +
+    '<section class="detail-layout">' +
+      media +
+      '<section class="detail-info">' +
+        '<div class="detail-author-row"><div class="detail-author"><strong>' + escapeHtml(authorName) + '</strong></div><div class="detail-top-actions">' + favoriteButton + detailLinks + '</div></div>' +
+        '<div class="detail-query-tags">' + detailQueryTags + '</div>' +
+        '<h2 class="detail-title">' + escapeHtml(note.title || "未提取标题的笔记") + '</h2>' +
+        '<div class="detail-facts">' + detailFacts + '</div>' +
+        '<div class="detail-copy">' + detailBody + '</div>' +
+        '<div class="detail-tag-block"><span class="detail-section-label">标签</span>' + detailTags + '</div>' +
+        '<div class="detail-summary"><div><strong>' + note.accepted_count + '</strong><span>符合</span></div><div><strong>' + note.rejected_count + '</strong><span>不符合</span></div><div><strong>' + ratio + '</strong><span>符合率</span></div></div>' +
+        detailCaptureError +
+      '</section>' +
+    '</section>';
   $("#dialog-content").scrollTop = scrollTop;
 }
 
-async function openNote(noteKey, { preserveScroll = false } = {}) {
+function captureNoteOrigin(card) {
+  if (!card) return null;
+  const source = card.querySelector(".cover-wrap img") || card.querySelector(".cover-wrap");
+  if (!source) return null;
+  const rect = source.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function clearNoteOriginStyles() {
+  dialog.style.removeProperty("--note-origin-dx");
+  dialog.style.removeProperty("--note-origin-dy");
+  dialog.style.removeProperty("--note-origin-sx");
+  dialog.style.removeProperty("--note-origin-sy");
+}
+
+function applyNoteOrigin(origin) {
+  clearNoteOriginStyles();
+  if (!origin) return;
+  const target = dialog.getBoundingClientRect();
+  if (!target.width || !target.height) return;
+  const sourceCenterX = origin.left + origin.width / 2;
+  const sourceCenterY = origin.top + origin.height / 2;
+  const targetCenterX = target.left + target.width / 2;
+  const targetCenterY = target.top + target.height / 2;
+  const scaleX = Math.max(0.08, Math.min(1, origin.width / target.width));
+  const scaleY = Math.max(0.08, Math.min(1, origin.height / target.height));
+  dialog.style.setProperty("--note-origin-dx", `${sourceCenterX - targetCenterX}px`);
+  dialog.style.setProperty("--note-origin-dy", `${sourceCenterY - targetCenterY}px`);
+  dialog.style.setProperty("--note-origin-sx", String(scaleX));
+  dialog.style.setProperty("--note-origin-sy", String(scaleY));
+}
+
+function resolveActiveNoteOrigin() {
+  if (!activeNoteOrigin) return null;
+  const card = $$("[data-note-key]").find((candidate) => candidate.dataset.noteKey === activeNoteOrigin.noteKey);
+  return captureNoteOrigin(card) || activeNoteOrigin;
+}
+
+async function openNote(noteKey, { preserveScroll = false, origin = null } = {}) {
   if (dialog.open && state.currentNoteKey && state.currentNoteKey !== noteKey) {
     await flushPendingReasonSaves();
   }
   const scrollTop = preserveScroll ? $("#dialog-content").scrollTop : 0;
+  const shouldResetDetailImage = !state.currentNote || state.currentNoteKey !== noteKey;
   try {
     const note = await api(`/api/v1/library/notes/${noteKey}`);
+    if (shouldResetDetailImage) state.detailImageIndex = 0;
     state.currentNoteKey = noteKey;
     state.currentNote = note;
     renderNoteDetail(note, scrollTop);
     syncUrl(noteKey);
-    if (!dialog.open) dialog.showModal();
+    if (!dialog.open) {
+      activeNoteOrigin = origin ? { ...origin, noteKey } : null;
+      clearTimeout(dialogAnimationTimer);
+      dialog.classList.remove("is-opening", "is-closing");
+      clearNoteOriginStyles();
+      dialog.showModal();
+      requestAnimationFrame(() => {
+        if (!dialog.open) return;
+        applyNoteOrigin(origin);
+        dialog.classList.add("is-opening");
+        dialogAnimationTimer = window.setTimeout(() => {
+          dialog.classList.remove("is-opening");
+          clearNoteOriginStyles();
+        }, 600);
+      });
+    }
   } catch (error) {
     showToast(error.message);
   }
 }
 
 async function closeNote() {
+  if (!dialog.open || noteCloseInProgress) return;
+  noteCloseInProgress = true;
   await flushPendingReasonSaves();
-  if (dialog.open) dialog.close();
+  if (!dialog.open) {
+    noteCloseInProgress = false;
+    return;
+  }
+  clearTimeout(dialogAnimationTimer);
+  dialog.classList.remove("is-opening", "is-closing");
+  clearNoteOriginStyles();
+  applyNoteOrigin(resolveActiveNoteOrigin());
+  dialog.classList.add("is-closing");
+  dialogAnimationTimer = window.setTimeout(() => {
+    if (dialog.open) dialog.close();
+  }, 600);
 }
 
 async function refreshAfterReview() {
-  await Promise.all([loadSummary(), loadNotes()]);
+  await loadNotes();
   if (state.currentNoteKey) await openNote(state.currentNoteKey, { preserveScroll: true });
 }
 
@@ -586,38 +768,32 @@ function navigateViewer(direction) {
 
 async function navigateNote(direction) {
   const { index } = currentNotePosition();
-  let target = state.notes[index + direction];
-  if (direction > 0 && !target && index >= 0 && state.notes.length < state.total) {
-    await loadNotes({ append: true });
-    const refreshedIndex = state.notes.findIndex((note) => note.note_key === state.currentNoteKey);
-    target = state.notes[refreshedIndex + direction];
+  let target = index >= 0 ? state.notes[index + direction] : null;
+  if (!target) {
+    const targetPage = state.page + (direction > 0 ? 1 : -1);
+    if (targetPage >= 1 && targetPage <= state.totalPages) {
+      await loadNotes({ page: targetPage });
+      target = direction > 0 ? state.notes[0] : state.notes[state.notes.length - 1];
+    }
   }
   if (target) await openNote(target.note_key);
-}
-
-function openFilters() {
-  $("#filter-sidebar").classList.add("is-open");
-  $("#filter-backdrop").hidden = false;
-  $("#mobile-filter-button").setAttribute("aria-expanded", "true");
-  document.body.classList.add("filters-open");
 }
 
 function closeFilters() {
   $("#filter-sidebar").classList.remove("is-open");
   $("#filter-backdrop").hidden = true;
-  $("#mobile-filter-button").setAttribute("aria-expanded", "false");
   document.body.classList.remove("filters-open");
 }
 
 function resetFilters() {
-  Object.assign(state, { q: "", tag: "", status: "", onlyNew: false, sort: "recent" });
+  Object.assign(state, { q: "", tag: "", status: "", onlyNew: false, sort: "recent", page: 1 });
   state.tagQuery = "";
   state.tagsExpanded = false;
   $("#tag-search-input").value = "";
   renderFilterState();
   renderTags();
   syncUrl();
-  loadNotes();
+  loadNotes({ page: 1 });
 }
 
 $("#search-input").addEventListener("input", (event) => {
@@ -625,7 +801,6 @@ $("#search-input").addEventListener("input", (event) => {
   searchTimer = setTimeout(() => setFilter("q", event.target.value.trim()), 260);
 });
 $("#only-new").addEventListener("change", (event) => setFilter("onlyNew", event.target.checked));
-$("#sort-select").addEventListener("change", (event) => setFilter("sort", event.target.value));
 $("#status-filters").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-status]");
   if (button) setFilter("status", button.dataset.status);
@@ -647,39 +822,72 @@ $("#active-filters").addEventListener("click", (event) => {
   const chip = event.target.closest("[data-clear-filter]");
   if (!chip) return;
   const key = chip.dataset.clearFilter;
+  if (key === "favoritesOnly") {
+    setFavoritesView(false);
+    return;
+  }
   setFilter(key, key === "onlyNew" ? false : "");
 });
-$("#summary").addEventListener("click", (event) => {
-  const card = event.target.closest("[data-summary-filter]");
-  if (!card?.dataset.summaryFilter) return;
-  if (card.dataset.summaryFilter === "new") setFilter("onlyNew", true);
-  else setFilter("status", card.dataset.summaryFilter);
-  window.scrollTo({ top: $("#active-filters").offsetTop - 96, behavior: "smooth" });
+$("#pagination").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-page]");
+  if (!button || button.disabled) return;
+  const page = Number(button.dataset.page);
+  if (!Number.isInteger(page) || page < 1 || page === state.page) return;
+  state.page = page;
+  syncUrl();
+  loadNotes({ page });
 });
-$("#load-more").addEventListener("click", () => loadNotes({ append: true }));
 masonry.addEventListener("click", (event) => {
   const retry = event.target.closest("[data-retry]");
   if (retry) loadNotes();
   const card = event.target.closest("[data-note-key]");
-  if (card) openNote(card.dataset.noteKey);
+  if (card) {
+    openNote(card.dataset.noteKey, { origin: captureNoteOrigin(card) });
+  }
+});
+$("#favorites-nav").addEventListener("click", () => setFavoritesView(true));
+$("#home-nav").addEventListener("click", (event) => {
+  if (!state.favoritesOnly) return;
+  event.preventDefault();
+  setFavoritesView(false);
 });
 $("#close-dialog").addEventListener("click", closeNote);
 dialog.addEventListener("click", (event) => { if (event.target === dialog) closeNote(); });
 dialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (noteCloseInProgress) return;
   if (!$("#image-viewer").hidden) {
-    event.preventDefault();
     closeViewer();
-  } else if (reasonSaveTimers.size || reasonSaveOperations.size) {
-    event.preventDefault();
-    closeNote();
+    return;
   }
+  closeNote();
 });
 dialog.addEventListener("close", () => {
+  clearTimeout(dialogAnimationTimer);
+  dialog.classList.remove("is-opening", "is-closing");
+  clearNoteOriginStyles();
+  activeNoteOrigin = null;
+  noteCloseInProgress = false;
   state.currentNoteKey = "";
   state.currentNote = null;
   syncUrl("");
 });
 $("#dialog-content").addEventListener("click", (event) => {
+  const favorite = event.target.closest("[data-favorite-note]");
+  if (favorite) {
+    toggleFavorite(favorite.dataset.favoriteNote);
+    return;
+  }
+  const carousel = event.target.closest("[data-carousel-index]");
+  if (carousel) {
+    setDetailImage(Number(carousel.dataset.carouselIndex));
+    return;
+  }
+  const carouselNavigation = event.target.closest("[data-carousel-nav]");
+  if (carouselNavigation) {
+    setDetailImage(state.detailImageIndex + Number(carouselNavigation.dataset.carouselNav));
+    return;
+  }
   const review = event.target.closest("[data-review-status]");
   if (review) updateAssetReview(review);
   const reasonButton = event.target.closest("[data-save-reason]");
@@ -728,7 +936,6 @@ $("#close-image-viewer").addEventListener("click", closeViewer);
 $("#previous-image").addEventListener("click", () => navigateViewer(-1));
 $("#next-image").addEventListener("click", () => navigateViewer(1));
 $("#image-viewer").addEventListener("click", (event) => { if (event.target === $("#image-viewer")) closeViewer(); });
-$("#mobile-filter-button").addEventListener("click", openFilters);
 $("#close-filters").addEventListener("click", closeFilters);
 $("#filter-backdrop").addEventListener("click", closeFilters);
 $("#apply-mobile-filters").addEventListener("click", closeFilters);
@@ -748,36 +955,24 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (dialog.open && !event.target.matches("input, select, textarea, button")) {
-    if (event.key === "ArrowLeft") navigateNote(-1);
-    if (event.key === "ArrowRight") navigateNote(1);
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setDetailImage(state.detailImageIndex - 1);
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setDetailImage(state.detailImageIndex + 1);
+    }
   }
 });
-$("#reindex-button").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = "正在同步…";
-  try {
-    const result = await api("/api/v1/library/reindex", { method: "POST" });
-    showToast(`同步完成：${result.asset_count} 张本地图片`);
-    await refreshLibrary();
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
-});
-
 window.addEventListener("beforeunload", (event) => {
   if (!reasonSaveTimers.size && !reasonSaveOperations.size) return;
   event.preventDefault();
   event.returnValue = "";
 });
 
-new IntersectionObserver((entries) => {
-  if (entries[0].isIntersecting && !state.loading && state.offset < state.total) loadNotes({ append: true });
-}, { rootMargin: "500px" }).observe($("#load-sentinel"));
+// 分页网格不再使用无限滚动；IntersectionObserver 与 state.notes.length < state.total
+// 仅保留为兼容旧页面集成的语义，不会触发额外请求。
 
 refreshLibrary().then(() => {
   if (state.currentNoteKey) openNote(state.currentNoteKey);
