@@ -32,7 +32,8 @@ def test_library_ui_resources_and_selectors_stay_connected() -> None:
     assert "/static/ux.css" in parser.stylesheets
 
     static_id_selectors = set(re.findall(r'\$\("#([a-z0-9-]+)"\)', script))
-    missing_ids = static_id_selectors.difference(parser.ids)
+    runtime_detail_ids = {"detail-media"}
+    missing_ids = static_id_selectors.difference(parser.ids).difference(runtime_detail_ids)
     assert missing_ids == set()
 
 
@@ -42,8 +43,8 @@ def test_library_ui_exposes_time_saving_review_controls() -> None:
     script = (static_root / "library.js").read_text(encoding="utf-8")
 
     assert "tag-search-input" in html
-    assert "sort-select" in html
-    assert "mobile-filter-button" in html
+    assert "sort-select" not in html
+    assert "mobile-filter-button" not in html
     assert "data-batch-review" in script
     assert "data-review-status" in script
     assert "撤销" in script
@@ -58,3 +59,20 @@ def test_library_ui_exposes_time_saving_review_controls() -> None:
     assert "flushPendingReasonSaves" in script
     assert "beforeunload" in script
     assert "700" in script
+
+
+def test_library_ui_uses_cached_data_and_independent_detail_image_transitions() -> None:
+    static_root = Path(__file__).parents[1] / "apps" / "api" / "static"
+    script = (static_root / "library.js").read_text(encoding="utf-8")
+    stylesheet = (static_root / "redbeauty.css").read_text(encoding="utf-8")
+
+    assert "function setDetailImage" in script
+    assert "preloadAdjacentAssets" in script
+    assert "getNoteDetail" in script
+    assert "NOTE_LIST_CACHE_LIMIT" in script
+    assert "has-note-origin" in script
+    assert "focus({ preventScroll: true })" in script
+    assert "column-count" not in stylesheet
+    assert "masonry-content-reveal" in stylesheet
+    assert "note-dialog-fallback-close" in stylesheet
+    assert "performance-lite" in stylesheet

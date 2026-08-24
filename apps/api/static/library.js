@@ -46,6 +46,9 @@ const state = {
 
 const pageSize = 25;
 const $ = (selector) => document.querySelector(selector);
+const NOTE_LIST_CACHE_LIMIT = 12;
+const NOTE_DETAIL_CACHE_LIMIT = 36;
+const DETAIL_IMAGE_TRANSITION_MS = 200;
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const masonry = $("#masonry");
 const dialog = $("#note-dialog");
@@ -61,6 +64,17 @@ const reasonSaveTimers = new Map();
 const reasonSaveOperations = new Set();
 const savedReasonSelector = "[data-saved-reason]";
 
+const noteListCache = new Map();
+const noteDetailCache = new Map();
+const preloadedAssetUrls = new Set();
+let detailRequestId = 0;
+let detailImageTransitionId = 0;
+let lastNoteTrigger = null;
+const reducedMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+
+function prefersLightweightEffects() {
+  return Boolean(reducedMotionQuery?.matches || navigator.connection?.saveData || (navigator.deviceMemory && navigator.deviceMemory <= 4));
+}
 const labels = {
   eligible: "满足推送阈值",
   needs_review: "待复核",
@@ -99,6 +113,60 @@ async function api(url, options = {}) {
   return response.json();
 }
 
+function updateEffectMode() {
+  document.documentElement.classList.toggle("performance-lite", prefersLightweightEffects());
+}
+
+function rememberCacheEntry(cache, key, value, limit) {
+  cache.delete(key);
+  cache.set(key, { value, cachedAt: Date.now() });
+  while (cache.size > limit) cache.delete(cache.keys().next().value);
+}
+
+function readCacheEntry(cache, key) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > 60_000) {
+    cache.delete(key);
+    return null;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.value;
+}
+
+function clearLibraryCaches() {
+  noteListCache.clear();
+  noteDetailCache.clear();
+}
+
+function preloadAssetUrl(url) {
+  if (!url || preloadedAssetUrls.has(url)) return;
+  preloadedAssetUrls.add(url);
+  const image = new Image();
+  image.decoding = "async";
+  image.src = url;
+}
+
+function preloadAdjacentAssets(note, index) {
+  const assets = note?.assets || [];
+  [index - 1, index + 1]
+    .filter((candidate) => candidate >= 0 && candidate < assets.length)
+    .forEach((candidate) => preloadAssetUrl(assets[candidate]?.media_url));
+}
+
+async function getNoteDetail(noteKey, { force = false } = {}) {
+  if (!force) {
+    const cached = readCacheEntry(noteDetailCache, noteKey);
+    if (cached) return cached;
+  }
+  const note = await api(`/api/v1/library/notes/${noteKey}`);
+  rememberCacheEntry(noteDetailCache, noteKey, note, NOTE_DETAIL_CACHE_LIMIT);
+  return note;
+}
+
+updateEffectMode();
+reducedMotionQuery?.addEventListener?.("change", updateEffectMode);
 function syncUrl(noteKey = state.currentNoteKey) {
   const params = new URLSearchParams();
   if (state.q) params.set("q", state.q);
@@ -289,17 +357,29 @@ function renderPagination() {
   }).join("");
 }
 
-async function loadNotes({ page = state.page } = {}) {
+function revealMasonry() {
+  if (prefersLightweightEffects()) return;
+  masonry.classList.remove("is-revealing");
+  void masonry.offsetWidth;
+  masonry.classList.add("is-revealing");
+  window.setTimeout(() => masonry.classList.remove("is-revealing"), 180);
+}
+
+async function loadNotes({ page = state.page, force = false } = {}) {
   notesController?.abort();
   notesController = new AbortController();
   state.page = Math.max(1, Number(page) || 1);
   const requestId = ++notesRequestId;
+  const cacheKey = notesParams();
   state.loading = true;
   masonry.setAttribute("aria-busy", "true");
+  masonry.dataset.loading = "true";
   if (!state.notes.length) masonry.innerHTML = skeletonCards();
   else masonry.classList.add("is-refreshing");
   try {
-    const payload = await api("/api/v1/library/notes?" + notesParams(), { signal: notesController?.signal });
+    const cachedPayload = force ? null : readCacheEntry(noteListCache, cacheKey);
+    const payload = cachedPayload || await api("/api/v1/library/notes?" + cacheKey, { signal: notesController?.signal });
+    if (!cachedPayload) rememberCacheEntry(noteListCache, cacheKey, payload, NOTE_LIST_CACHE_LIMIT);
     if (requestId !== notesRequestId) return;
     const fetchedItems = payload.items || [];
     const favoriteItems = state.favoritesOnly
@@ -310,13 +390,14 @@ async function loadNotes({ page = state.page } = {}) {
     if (state.totalPages && state.page > state.totalPages) {
       state.page = state.totalPages;
       syncUrl();
-      return loadNotes({ page: state.page });
+      return loadNotes({ page: state.page, force });
     }
     const start = (state.page - 1) * pageSize;
     const visibleItems = state.favoritesOnly ? favoriteItems.slice(start, start + pageSize) : fetchedItems;
     state.notes = visibleItems;
     state.offset = start + visibleItems.length;
     masonry.innerHTML = visibleItems.map(renderCard).join("");
+    revealMasonry();
     const emptyTitle = $("#empty-state h2");
     const emptyCopy = $("#empty-state p");
     if (state.favoritesOnly) {
@@ -337,13 +418,14 @@ async function loadNotes({ page = state.page } = {}) {
     if (requestId === notesRequestId) {
       state.loading = false;
       masonry.classList.remove("is-refreshing");
+      masonry.removeAttribute("data-loading");
       masonry.setAttribute("aria-busy", "false");
     }
   }
 }
 async function refreshLibrary() {
   renderFilterState();
-  const results = await Promise.allSettled([loadTags(), loadNotes()]);
+  const results = await Promise.allSettled([loadTags(), loadNotes({ force: true })]);
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") {
     showToast(failure.reason?.message || "部分数据加载失败，请稍后重试");
@@ -388,13 +470,94 @@ function renderCarouselMedia(note) {
     '<div class="detail-media-stage">' +
       '<img class="detail-media-backdrop" src="' + escapeHtml(asset.media_url) + '" aria-hidden="true" alt="" decoding="async" />' +
       '<button type="button" class="detail-carousel-nav previous" data-carousel-nav="-1" aria-label="上一张图片" ' + (currentIndex === 0 ? "disabled" : "") + '>‹</button>' +
-      '<button type="button" class="detail-hero-button" data-image-index="' + currentIndex + '" aria-label="查看第 ' + (currentIndex + 1) + ' 张图片大图"><img src="' + escapeHtml(asset.media_url) + '" decoding="async" alt="笔记图片 ' + (asset.source_index || currentIndex + 1) + '" /><span class="detail-hero-count">' + (currentIndex + 1) + ' / ' + assets.length + '</span></button>' +
+      '<button type="button" class="detail-hero-button" data-image-index="' + currentIndex + '" aria-label="查看第 ' + (currentIndex + 1) + ' 张图片大图"><img class="detail-hero-image is-current" src="' + escapeHtml(asset.media_url) + '" decoding="async" alt="笔记图片 ' + (asset.source_index || currentIndex + 1) + '" /><span class="detail-hero-count">' + (currentIndex + 1) + ' / ' + assets.length + '</span></button>' +
       '<button type="button" class="detail-carousel-nav next" data-carousel-nav="1" aria-label="下一张图片" ' + (currentIndex === assets.length - 1 ? "disabled" : "") + '>›</button>' +
     '</div>' +
     '<div class="detail-thumbs" aria-label="图片导航"><div class="detail-dot-row" aria-label="图片位置">' + dots + '</div></div>' +
   '</section>';
 }
 
+function clampDetailImageIndex(index, assets) {
+  return Math.min(Math.max(Number(index) || 0, 0), Math.max(assets.length - 1, 0));
+}
+
+function updateDetailMediaControls(note, index) {
+  const assets = note.assets || [];
+  const media = $("#detail-media");
+  if (!media || !assets.length) return;
+  const hero = media.querySelector(".detail-hero-button");
+  const previous = media.querySelector('[data-carousel-nav="-1"]');
+  const next = media.querySelector('[data-carousel-nav="1"]');
+  if (hero) {
+    hero.dataset.imageIndex = String(index);
+    hero.setAttribute("aria-label", "查看第 " + (index + 1) + " 张图片大图");
+  }
+  if (previous) previous.disabled = index === 0;
+  if (next) next.disabled = index === assets.length - 1;
+  media.querySelectorAll("[data-carousel-index]").forEach((dot) => {
+    const isActive = Number(dot.dataset.carouselIndex) === index;
+    dot.classList.toggle("active", isActive);
+    dot.setAttribute("aria-current", String(isActive));
+  });
+}
+
+function setDetailImage(index) {
+  const note = state.currentNote;
+  const assets = note?.assets || [];
+  if (!assets.length) return;
+  const previousIndex = state.detailImageIndex;
+  const nextIndex = clampDetailImageIndex(index, assets);
+  if (nextIndex === previousIndex) return;
+
+  const media = $("#detail-media");
+  const hero = media?.querySelector(".detail-hero-button");
+  if (!media || !hero) {
+    state.detailImageIndex = nextIndex;
+    renderNoteDetail(note, $("#dialog-content").scrollTop);
+    preloadAdjacentAssets(note, nextIndex);
+    return;
+  }
+
+  const transitionId = ++detailImageTransitionId;
+  const nextAsset = assets[nextIndex];
+  state.detailImageIndex = nextIndex;
+  updateDetailMediaControls(note, nextIndex);
+  const incoming = new Image();
+  incoming.className = "detail-hero-image is-entering " + (nextIndex > previousIndex ? "from-next" : "from-previous");
+  incoming.decoding = "async";
+  incoming.alt = "笔记图片 " + (nextAsset.source_index || nextIndex + 1);
+
+  const showNextImage = () => {
+    if (transitionId !== detailImageTransitionId || !hero.isConnected) return;
+    const outgoingImages = [...hero.querySelectorAll(".detail-hero-image")];
+    const outgoingDirection = nextIndex > previousIndex ? "to-previous" : "to-next";
+    outgoingImages.forEach((image) => {
+      image.classList.remove("is-current", "is-entering", "is-visible", "from-next", "from-previous", "to-next", "to-previous");
+      image.classList.add("is-leaving", outgoingDirection);
+    });
+    hero.append(incoming);
+    requestAnimationFrame(() => incoming.classList.add("is-visible"));
+    const backdrop = media.querySelector(".detail-media-backdrop");
+    if (backdrop) backdrop.src = nextAsset.media_url;
+    window.setTimeout(() => {
+      if (transitionId !== detailImageTransitionId) return;
+      outgoingImages.forEach((image) => image.remove());
+      incoming.classList.remove("is-entering", "is-visible", "from-next", "from-previous");
+      incoming.classList.add("is-current");
+    }, DETAIL_IMAGE_TRANSITION_MS);
+    preloadAdjacentAssets(note, nextIndex);
+  };
+
+  incoming.addEventListener("load", showNextImage, { once: true });
+  incoming.addEventListener("error", () => {
+    if (transitionId !== detailImageTransitionId) return;
+    state.detailImageIndex = previousIndex;
+    updateDetailMediaControls(note, previousIndex);
+    showToast("图片加载失败，请重试");
+  }, { once: true });
+  incoming.src = nextAsset.media_url;
+  if (incoming.complete && incoming.naturalWidth) showNextImage();
+}
 function renderNoteDetail(note, scrollTop = 0) {
   const assets = note.assets || [];
   const source = note.source_url
@@ -486,33 +649,47 @@ function applyNoteOrigin(origin) {
   dialog.style.setProperty("--note-origin-sy", String(scaleY));
 }
 
+function originIsVisible(origin) {
+  if (!origin) return false;
+  return origin.width > 0
+    && origin.height > 0
+    && origin.left < window.innerWidth
+    && origin.top < window.innerHeight
+    && origin.left + origin.width > 0
+    && origin.top + origin.height > 0;
+}
+
 function resolveActiveNoteOrigin() {
   if (!activeNoteOrigin) return null;
   const card = $$("[data-note-key]").find((candidate) => candidate.dataset.noteKey === activeNoteOrigin.noteKey);
-  return captureNoteOrigin(card) || activeNoteOrigin;
+  const origin = captureNoteOrigin(card);
+  return originIsVisible(origin) ? origin : null;
 }
 
-async function openNote(noteKey, { preserveScroll = false, origin = null } = {}) {
+async function openNote(noteKey, { preserveScroll = false, origin = null, force = false } = {}) {
   if (dialog.open && state.currentNoteKey && state.currentNoteKey !== noteKey) {
     await flushPendingReasonSaves();
   }
+  const requestId = ++detailRequestId;
   const scrollTop = preserveScroll ? $("#dialog-content").scrollTop : 0;
   const shouldResetDetailImage = !state.currentNote || state.currentNoteKey !== noteKey;
   try {
-    const note = await api(`/api/v1/library/notes/${noteKey}`);
+    const note = await getNoteDetail(noteKey, { force });
+    if (requestId !== detailRequestId) return;
     if (shouldResetDetailImage) state.detailImageIndex = 0;
     state.currentNoteKey = noteKey;
     state.currentNote = note;
     renderNoteDetail(note, scrollTop);
+    preloadAdjacentAssets(note, state.detailImageIndex);
     syncUrl(noteKey);
     if (!dialog.open) {
       activeNoteOrigin = origin ? { ...origin, noteKey } : null;
       clearTimeout(dialogAnimationTimer);
-      dialog.classList.remove("is-opening", "is-closing");
+      dialog.classList.remove("is-opening", "is-closing", "has-note-origin");
       clearNoteOriginStyles();
       dialog.showModal();
       requestAnimationFrame(() => {
-        if (!dialog.open) return;
+        if (!dialog.open || requestId !== detailRequestId) return;
         applyNoteOrigin(origin);
         dialog.classList.add("is-opening");
         dialogAnimationTimer = window.setTimeout(() => {
@@ -522,7 +699,7 @@ async function openNote(noteKey, { preserveScroll = false, origin = null } = {})
       });
     }
   } catch (error) {
-    showToast(error.message);
+    if (requestId === detailRequestId) showToast(error.message);
   }
 }
 
@@ -535,9 +712,13 @@ async function closeNote() {
     return;
   }
   clearTimeout(dialogAnimationTimer);
-  dialog.classList.remove("is-opening", "is-closing");
+  dialog.classList.remove("is-opening", "is-closing", "has-note-origin");
   clearNoteOriginStyles();
-  applyNoteOrigin(resolveActiveNoteOrigin());
+  const origin = resolveActiveNoteOrigin();
+  if (origin) {
+    applyNoteOrigin(origin);
+    dialog.classList.add("has-note-origin");
+  }
   dialog.classList.add("is-closing");
   dialogAnimationTimer = window.setTimeout(() => {
     if (dialog.open) dialog.close();
@@ -545,8 +726,9 @@ async function closeNote() {
 }
 
 async function refreshAfterReview() {
-  await loadNotes();
-  if (state.currentNoteKey) await openNote(state.currentNoteKey, { preserveScroll: true });
+  clearLibraryCaches();
+  await loadNotes({ force: true });
+  if (state.currentNoteKey) await openNote(state.currentNoteKey, { preserveScroll: true, force: true });
 }
 
 async function saveReview(assetId, status, reason = null) {
@@ -842,6 +1024,7 @@ masonry.addEventListener("click", (event) => {
   if (retry) loadNotes();
   const card = event.target.closest("[data-note-key]");
   if (card) {
+    lastNoteTrigger = card;
     openNote(card.dataset.noteKey, { origin: captureNoteOrigin(card) });
   }
 });
@@ -864,13 +1047,20 @@ dialog.addEventListener("cancel", (event) => {
 });
 dialog.addEventListener("close", () => {
   clearTimeout(dialogAnimationTimer);
-  dialog.classList.remove("is-opening", "is-closing");
+  const focusKey = activeNoteOrigin?.noteKey || state.currentNoteKey;
+  const fallbackTarget = focusKey ? $$("[data-note-key]").find((candidate) => candidate.dataset.noteKey === focusKey) : null;
+  const focusTarget = lastNoteTrigger?.isConnected ? lastNoteTrigger : fallbackTarget;
+  dialog.classList.remove("is-opening", "is-closing", "has-note-origin");
   clearNoteOriginStyles();
   activeNoteOrigin = null;
   noteCloseInProgress = false;
   state.currentNoteKey = "";
   state.currentNote = null;
   syncUrl("");
+  requestAnimationFrame(() => {
+    if (focusTarget?.isConnected) focusTarget.focus({ preventScroll: true });
+  });
+  lastNoteTrigger = null;
 });
 $("#dialog-content").addEventListener("click", (event) => {
   const favorite = event.target.closest("[data-favorite-note]");
