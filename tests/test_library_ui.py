@@ -67,7 +67,15 @@ def test_library_ui_uses_cached_data_and_independent_detail_image_transitions() 
     stylesheet = (static_root / "redbeauty.css").read_text(encoding="utf-8")
 
     assert "function setDetailImage" in script
+    assert "function revealInitialHeroImage" in script
     assert "preloadAdjacentAssets" in script
+    assert "const heroImage = hero.querySelector(\".detail-hero-image\")" in script
+    assert "let imageTransitionCommitted = false" in script
+    assert "heroImage.src = nextAsset.media_url" in script
+    assert "loading=\"eager\"" in script
+    assert "fetchpriority=\"high\"" in script
+    assert "heroImage.complete" in script
+    assert "hero.append(incoming)" not in script
     assert "getNoteDetail" in script
     assert "NOTE_LIST_CACHE_LIMIT" in script
     assert "has-note-origin" in script

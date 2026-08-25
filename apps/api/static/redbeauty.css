@@ -1237,7 +1237,17 @@ body.filters-open { overflow: hidden; }
   object-fit: contain;
   pointer-events: none;
 }
-.detail-hero-button .detail-hero-image.is-current {
+.detail-hero-button .detail-hero-image.is-switching-image {
+  opacity: .3;
+  transform: scale(.992);
+}
+.detail-hero-button .detail-hero-image.is-current.is-loading {
+  opacity: 0;
+}
+.detail-hero-button .detail-hero-image.is-current.is-ready,
+.detail-hero-button .detail-hero-image.is-current.is-error {
+  opacity: 1;
+}.detail-hero-button .detail-hero-image.is-current {
   opacity: 1;
   transform: translate3d(0, 0, 0);
 }

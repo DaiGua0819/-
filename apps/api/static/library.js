@@ -470,11 +470,30 @@ function renderCarouselMedia(note) {
     '<div class="detail-media-stage">' +
       '<img class="detail-media-backdrop" src="' + escapeHtml(asset.media_url) + '" aria-hidden="true" alt="" decoding="async" />' +
       '<button type="button" class="detail-carousel-nav previous" data-carousel-nav="-1" aria-label="上一张图片" ' + (currentIndex === 0 ? "disabled" : "") + '>‹</button>' +
-      '<button type="button" class="detail-hero-button" data-image-index="' + currentIndex + '" aria-label="查看第 ' + (currentIndex + 1) + ' 张图片大图"><img class="detail-hero-image is-current" src="' + escapeHtml(asset.media_url) + '" decoding="async" alt="笔记图片 ' + (asset.source_index || currentIndex + 1) + '" /><span class="detail-hero-count">' + (currentIndex + 1) + ' / ' + assets.length + '</span></button>' +
+      '<button type="button" class="detail-hero-button" data-image-index="' + currentIndex + '" aria-label="查看第 ' + (currentIndex + 1) + ' 张图片大图"><img class="detail-hero-image is-current is-loading" loading="eager" fetchpriority="high" src="' + escapeHtml(asset.media_url) + '" decoding="async" alt="笔记图片 ' + (asset.source_index || currentIndex + 1) + '" /><span class="detail-hero-count">' + (currentIndex + 1) + ' / ' + assets.length + '</span></button>' +
       '<button type="button" class="detail-carousel-nav next" data-carousel-nav="1" aria-label="下一张图片" ' + (currentIndex === assets.length - 1 ? "disabled" : "") + '>›</button>' +
     '</div>' +
     '<div class="detail-thumbs" aria-label="图片导航"><div class="detail-dot-row" aria-label="图片位置">' + dots + '</div></div>' +
   '</section>';
+}
+
+function revealInitialHeroImage() {
+  const heroImage = $("#detail-media .detail-hero-image");
+  if (!heroImage) return;
+  const markReady = () => {
+    heroImage.classList.remove("is-loading", "is-error");
+    heroImage.classList.add("is-ready");
+  };
+  const markError = () => {
+    heroImage.classList.remove("is-loading");
+    heroImage.classList.add("is-error");
+  };
+  heroImage.addEventListener("load", markReady, { once: true });
+  heroImage.addEventListener("error", markError, { once: true });
+  if (heroImage.complete) {
+    if (heroImage.naturalWidth) markReady();
+    else markError();
+  }
 }
 
 function clampDetailImageIndex(index, assets) {
@@ -518,45 +537,47 @@ function setDetailImage(index) {
     return;
   }
 
+  const heroImage = hero.querySelector(".detail-hero-image");
+  if (!heroImage) {
+    state.detailImageIndex = nextIndex;
+    renderNoteDetail(note, $("#dialog-content").scrollTop);
+    preloadAdjacentAssets(note, nextIndex);
+    return;
+  }
+
   const transitionId = ++detailImageTransitionId;
   const nextAsset = assets[nextIndex];
   state.detailImageIndex = nextIndex;
   updateDetailMediaControls(note, nextIndex);
-  const incoming = new Image();
-  incoming.className = "detail-hero-image is-entering " + (nextIndex > previousIndex ? "from-next" : "from-previous");
-  incoming.decoding = "async";
-  incoming.alt = "笔记图片 " + (nextAsset.source_index || nextIndex + 1);
+  let imageTransitionCommitted = false;
+  const preloadedImage = new Image();
+  preloadedImage.decoding = "async";
 
   const showNextImage = () => {
-    if (transitionId !== detailImageTransitionId || !hero.isConnected) return;
-    const outgoingImages = [...hero.querySelectorAll(".detail-hero-image")];
-    const outgoingDirection = nextIndex > previousIndex ? "to-previous" : "to-next";
-    outgoingImages.forEach((image) => {
-      image.classList.remove("is-current", "is-entering", "is-visible", "from-next", "from-previous", "to-next", "to-previous");
-      image.classList.add("is-leaving", outgoingDirection);
-    });
-    hero.append(incoming);
-    requestAnimationFrame(() => incoming.classList.add("is-visible"));
-    const backdrop = media.querySelector(".detail-media-backdrop");
-    if (backdrop) backdrop.src = nextAsset.media_url;
+    if (imageTransitionCommitted || transitionId !== detailImageTransitionId || !hero.isConnected) return;
+    imageTransitionCommitted = true;
+    heroImage.classList.add("is-switching-image");
     window.setTimeout(() => {
-      if (transitionId !== detailImageTransitionId) return;
-      outgoingImages.forEach((image) => image.remove());
-      incoming.classList.remove("is-entering", "is-visible", "from-next", "from-previous");
-      incoming.classList.add("is-current");
-    }, DETAIL_IMAGE_TRANSITION_MS);
-    preloadAdjacentAssets(note, nextIndex);
+      if (transitionId !== detailImageTransitionId || !heroImage.isConnected) return;
+      heroImage.src = nextAsset.media_url;
+      heroImage.alt = "笔记图片 " + (nextAsset.source_index || nextIndex + 1);
+      heroImage.className = "detail-hero-image is-current";
+      const backdrop = media.querySelector(".detail-media-backdrop");
+      if (backdrop) backdrop.src = nextAsset.media_url;
+      requestAnimationFrame(() => heroImage.classList.remove("is-switching-image"));
+      preloadAdjacentAssets(note, nextIndex);
+    }, 70);
   };
 
-  incoming.addEventListener("load", showNextImage, { once: true });
-  incoming.addEventListener("error", () => {
+  preloadedImage.addEventListener("load", showNextImage, { once: true });
+  preloadedImage.addEventListener("error", () => {
     if (transitionId !== detailImageTransitionId) return;
     state.detailImageIndex = previousIndex;
     updateDetailMediaControls(note, previousIndex);
     showToast("图片加载失败，请重试");
   }, { once: true });
-  incoming.src = nextAsset.media_url;
-  if (incoming.complete && incoming.naturalWidth) showNextImage();
+  preloadedImage.src = nextAsset.media_url;
+  if (preloadedImage.complete && preloadedImage.naturalWidth) showNextImage();
 }
 function renderNoteDetail(note, scrollTop = 0) {
   const assets = note.assets || [];
@@ -608,6 +629,7 @@ function renderNoteDetail(note, scrollTop = 0) {
         detailCaptureError +
       '</section>' +
     '</section>';
+  revealInitialHeroImage();
   $("#dialog-content").scrollTop = scrollTop;
 }
 
